@@ -77,6 +77,7 @@ screen <- function(traj, inputs)
       set_attribute("ScreenCost",  function() screen_unit_cost(inputs)) |>
       set_attribute("ConfirmCost", function() inputs$c.confirm) |>
       set_attribute("TreatA", 1) |>
+      set_attribute("TreatCost", function() inputs$c.Trt.onetime) |>
       release("sick1")           |>
       seize("treated_s1"),
 

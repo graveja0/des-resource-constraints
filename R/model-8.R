@@ -211,7 +211,7 @@ qaly_arrivals <- function(arrivals, inputs)
 add_attr_costs <- function(arrivals, inputs)
 {
   attrs <- get_mon_attributes(env)
-  oc    <- attrs[attrs$key %in% c("ScreenCost", "ConfirmCost"), , drop = FALSE]
+  oc    <- attrs[attrs$key %in% c("ScreenCost", "ConfirmCost", "TreatCost"), , drop = FALSE]
   if (nrow(oc) == 0) return(arrivals)
 
   undsum <- tapply(oc$value, oc$name, sum)

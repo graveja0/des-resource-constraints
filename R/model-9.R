@@ -104,6 +104,7 @@ confirm <- function(traj, inputs)
     ## branch 1: still in S1 — start treatment
     trajectory() |>
       set_attribute("TreatA", 1) |>
+      set_attribute("TreatCost", function() inputs$c.Trt.onetime) |>
       release("sick1")           |>
       seize("treated_s1"),
     ## branch 2: already progressed or died — no benefit
@@ -312,7 +313,7 @@ qaly_arrivals <- function(arrivals, inputs)
 add_attr_costs <- function(arrivals, inputs)
 {
   attrs <- get_mon_attributes(env)
-  oc    <- attrs[attrs$key %in% c("ScreenCost", "ConfirmCost"), , drop = FALSE]
+  oc    <- attrs[attrs$key %in% c("ScreenCost", "ConfirmCost", "TreatCost"), , drop = FALSE]
   if (nrow(oc) == 0) return(arrivals)
 
   undsum <- tapply(oc$value, oc$name, sum)

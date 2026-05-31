@@ -3,6 +3,16 @@
 #
 # Used by model-7 onward. Adds one-time screening, confirmation, and
 # treatment parameters for the LMIC screening arc.
+#
+# CALIBRATION TARGET (the manuscript's headline): molecular test = standard of
+# care; field test = cheaper, lower-sensitivity alternative.
+#   - WITHOUT resource contention, field is in the SE quadrant (cheaper AND more
+#     effective) — its coverage expansion dominates its sensitivity loss.
+#   - WITH a saturated confirmatory bottleneck, the ICER drifts into the SW
+#     quadrant (still cheaper, now LESS effective): field's volume overwhelms a
+#     fixed capacity, true positives progress untreated to deadly disease.
+# The cost axis is PROGRAM-DRIVEN (field's cheap test at scale), so it stays
+# negative across regimes; the effect axis flips sign as the queue bites.
 ###############################################################################
 
 source('inputs.R')
@@ -11,11 +21,16 @@ inputs <- modifyList(inputs, list(
 
   N = 1000,     # default for screening models; use 5000+ for production
 
-  # Pre-clinical cancer rarely resolves spontaneously — override the base
-  # r.S1H = 0.70 (appropriate for the generic Sick-Sicker spine) with a
-  # much smaller value.  This makes S1 a near-irreversible state and gives
-  # treatment a large enough benefit to be visible at practical N.
-  r.S1H = 0.05,
+  # --- natural-history overrides for the cancer-screening context ------------
+  # The generic Sick-Sicker spine (models 1-6) keeps inputs.R's values; the
+  # screening arc overrides them to a cancer-realistic, program-cost-dominated
+  # structure. Disease-state costs are deliberately modest so the cost axis is
+  # set by the SCREENING PROGRAM, not by disease prevention (see header).
+  r.S1H  =   0.05,   # pre-clinical cancer rarely resolves spontaneously
+  hr.S2D =  60,      # advanced disease is deadly (~3-yr survival, not 20)
+  c.H    =      0,   # no disease-attributable cost while healthy
+  c.S1   =    300,   # pre-clinical disease is asymptomatic -> low cost
+  c.S2   =   1000,   # advanced disease: cheap palliative care (LMIC)
 
   # --- one-time screen, staggered over a program rollout window --------------
   # Each patient is screened ONCE, at a time drawn ~Uniform(start, end). This
@@ -25,24 +40,26 @@ inputs <- modifyList(inputs, list(
   t.screen.start    =  1.0,    # program rollout begins (years)
   t.screen.end      = 11.0,    # rollout complete (10-year window)
 
-  # molecular test  (strategy = 'mol')
-  cov.mol           =  0.12,   # population coverage
+  # molecular test  (strategy = 'mol') — the STANDARD OF CARE
+  cov.mol           =  0.12,   # population coverage (low)
   sens.mol          =  0.95,   # sensitivity (high: detects pre-clinical S1)
   spec.mol          =  0.95,   # specificity (high: few false positives)
-  c.screen.mol      =  500,    # cost per screen (cold chain, lab technician)
+  c.screen.mol      = 1200,    # cost per screen (cold chain, cartridges, lab)
 
-  # field test  (strategy = 'field')
+  # field test  (strategy = 'field') — the cheaper alternative
   cov.field         =  0.50,   # coverage (primary-care deliverable)
-  sens.field        =  0.70,   # sensitivity (lower: misses some pre-clinical cases)
-  spec.field        =  0.80,   # specificity (lower: more false positives)
-  c.screen.field    =  100,    # cost per screen (1/5 of molecular)
+  sens.field        =  0.70,   # sensitivity (misses some pre-clinical cases)
+  spec.field        =  0.70,   # specificity (heavier false-positive burden)
+  c.screen.field    =  100,    # cost per screen (~1/12 of molecular, at scale)
 
   # confirmatory workup — same cost regardless of which test triggered it
-  c.confirm         =  150,    # cost per screen-positive (colposcopy / biopsy)
+  c.confirm         =   50,    # cost per screen-positive (colposcopy / biopsy)
 
   # treatment for confirmed true positives
   hr.TrtS1S2        =  0.20,   # S1->S2 hazard ratio under treatment (80% reduction)
-  c.TrtA            =   500,   # additional annual cost for treated S1 (generic drug)
+  c.Trt.onetime     =  300,    # ONE-TIME treatment cost (early-lesion ablation,
+                               #   e.g. cryotherapy), charged when treatment starts
+  c.TrtA            =    0,    # no additional ANNUAL on-treatment cost
   u.TrtA            =  0.90,   # utility in treated S1  (vs u.S1 = 0.80 untreated)
 
   # exogenous queue distribution parameters (model-9)
@@ -52,13 +69,11 @@ inputs <- modifyList(inputs, list(
 
   # finite confirmation capacity (model-10 and model-11)
   # Parameterised PER 1,000 PATIENTS so it scales with N. des_run() converts it
-  # to absolute slots: n.confirm.cap = round(cap.confirm.per1000 * N / 1000).
-  # At 6/1000 and mu=2: throughput = 6 * 2 = 12 confirmations/yr per 1,000.
-  # Field generates ~18 positives/yr per 1,000 (ρ ≈ 1.5 — the queue genuinely
-  # saturates, ~30% of would-be-treated patients progress while waiting);
-  # molecular ~5/yr (ρ ≈ 0.4 — served promptly). This is where accounting for
-  # the bottleneck materially erodes the field test's apparent advantage.
-  cap.confirm.per1000 =  4,    # confirmation slots per 1,000 simulated patients
+  # to absolute slots: round(cap.confirm.per1000 * N / 1000). At 2/1000, mu=2:
+  # throughput = 4 confirmations/yr per 1,000. Field generates ~18 positives/yr
+  # per 1,000 (ρ ≈ 4.5 — the bottleneck saturates and true positives progress
+  # untreated); molecular ~5/yr (served). This is what drives SE -> SW.
+  cap.confirm.per1000 =  2,    # confirmation slots per 1,000 simulated patients
   mu.confirm        =    2,    # service rate: ~2 completions per slot per year
   rate_admit_free   = 1000,    # near-instant admit when a slot is genuinely free
 
