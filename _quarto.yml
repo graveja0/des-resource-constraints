@@ -1,0 +1,33 @@
+project:
+  type: default
+
+execute:
+  freeze: auto      # re-run a chunk only when the .qmd text changes (see README: --no-freeze after editing .R files)
+  echo: true        # this is a teaching doc — show the code
+  warning: false
+  message: false
+
+knitr:
+  opts_chunk:
+    fig.align: center
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-tools: true
+    df-print: paged
+    fig-format: svg
+    fig-width: 6
+    fig-height: 3.5
+  pdf:
+    toc: true
+    number-sections: true
+    documentclass: scrartcl
+    fig-pos: "H"
+    fig-format: pdf
+    fig-width: 6
+    fig-height: 3.5
+
+bibliography: references.bib
