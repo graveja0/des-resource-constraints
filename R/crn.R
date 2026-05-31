@@ -39,6 +39,12 @@ CRN$bank <- list()        # name -> list(ctr = <env>, u = list(stream -> numeric
 CRN$seed <- 12345L
 CRN$size <- 500L          # uniforms per stream per patient (rollback caps ~100 events)
 
+# Sticky kill-switch (NOT cleared by crn_reset). Set TRUE to force every draw
+# onto the plain global-RNG fallback even when banks exist — used by the A-vs-B
+# replication harness, which needs independent (non-CRN) runs because shared
+# banks cannot align two models with different event-loop cadences.
+CRN$force_disabled <- FALSE
+
 # Streams: one per stochastic decision in the screening models.
 CRN$streams <- c("death", "sick1", "healthy", "sick2",
                  "screen", "screen_time", "confirm", "trtdur", "age")
@@ -96,7 +102,7 @@ next_u <- function(stream) {
 #   - Unarmed (models 1-6, which never call crn_init): fall back to the exact
 #     same rexp(1, rate) / runif(1) calls as before -> bit-identical results,
 #     identical global-RNG consumption. So models 1-6 are unaffected.
-crn_active <- function() !is.null(CRN$bank[[get_name(env)]])
+crn_active <- function() !isTRUE(CRN$force_disabled) && !is.null(CRN$bank[[get_name(env)]])
 
 # Inverse-CDF exponential draw. qexp(u, rate) = -log(1 - u)/rate ~ Exp(rate).
 draw_exp <- function(stream, rate) {

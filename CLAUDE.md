@@ -85,7 +85,23 @@ early disease; S2 = symptomatic/advanced). The intervention is a screening progr
 two competing tests: a high-sensitivity molecular test (expensive, low coverage) vs. a
 cheaper field test (lower sensitivity, but primary-care deliverable at much higher coverage).
 The resource constraint is **confirmatory diagnostic capacity** — the bottleneck that the
-field test's high referral volume overwhelms.
+field test's high referral volume (driven by both true and **false** positives) overwhelms.
+
+Each patient is screened **once**, at a CRN-drawn time `~Uniform(t.screen.start, t.screen.end)`
+over a rollout window (staggered, not a synchronized burst — realistic and keeps the
+confirm queue near steady state). Detection uses `cov`/`sens`/`spec` per test: a true
+positive needs `u_tp < cov·sens` (in S1), a false positive `u_fp < cov·(1−spec)` (in H).
+All parameters live in `inputs2.R`; `r.S1H = 0.05` (cancer S1 rarely resolves) and
+`c.TrtA = 500` (cheap generic treatment) are the calibration levers that put the
+field-vs-molecular comparison in the SE quadrant.
+
+**Common Random Numbers (`R/crn.R`).** Every patient draws a private bank of uniforms from
+a deterministic per-patient seed; the shared event files consume it by inverse-CDF via
+`draw_exp()`/`draw_unif()` (fallback to plain `rexp`/`runif` when unarmed, so models 1–6 and
+`main_loop.R` are untouched and bit-identical). This crushes the mol-vs-field variance ~80×.
+CRN aligns mol-vs-field **within** a model; it cannot align A vs B across models (their
+confirm-event cadences differ), so A=B is validated by **replication** with CRN disabled
+(`validation/validate-AB-replication.R`), not shared seeds.
 
 | Model | What it introduces |
 |-------|--------------------|
@@ -95,14 +111,14 @@ field test's high referral volume overwhelms.
 | **model-4** | Switches to `event_death2.R` (applies `hr.S1D` in S1; no S2 multiplier yet). Adds `event_sick1.R` + `event_healthy.R`; counters `healthy`, `sick1`. **Full H/S1 costs and utilities with discounting are already present here** (`c.H`, `c.S1`, `u.H`, `u.S1`). |
 | **model-5** | Same sources and counters as model-4. **Adds the `Healthy` return event to the registry** — the H↔S1 round-trip now works. Costing was already in model-4; nothing new there. |
 | **model-6** | Switches to `event_death3.R` (adds `hr.S2D`). Adds `event_sick2.R` + `sick2` counter. S2 costs and utilities. Full three-state Sick-Sicker natural history. |
-| **model-7** | **Molecular screening, capacity = ∞.** New `event_screen.R`: on entering S1, patient is offered screening at rate `cov.mol × sens.mol × λ_screen`; true positives are confirmed and treated (reduced S1→S2 hazard, treatment cost/utility). Everyone who tests positive gets a slot — no queue yet. |
-| **model-8** | **Field test comparison, capacity = ∞.** Sources `inputs2.R` which adds field-test parameters. Two strategies run side-by-side: molecular vs. field test. Field test's coverage expansion dominates its sensitivity loss → **SE quadrant** (lower total cost, more total QALYs at the population level). |
-| **model-9** | **Exogenous queue.** A fixed deterministic wait (policy parameter `wait_confirm_weeks`) is inserted between positive screen and confirmatory diagnosis. Disease progresses during the wait (S1 can advance to S2 while queued). The SE-quadrant result degrades. |
-| **model10** | **Endogenous queue — approach A.** Real finite-capacity `confirm` resource. Wait computed analytically from live `get_server_count` / `get_capacity` (M/M/c-flavored) at the moment each patient arrives; a free-slot guard ensures the patient is never blocked. Disease always progresses. `main_loop.R` untouched. Field test's high referral volume endogenously lengthens its own queue, further eroding the SE-quadrant result. |
-| **model11** | **FIFO companion — approach B. Most defensible.** Companion trajectory holds a real blocking `seize()` queue with per-patient `send`/`trap`; main disease trajectory is never blocked. Exact emergent FIFO queue. The headline result: A and B agree on mean CEA endpoints within Monte-Carlo noise, differing only on the wait distribution. |
+| **model-7** | **Molecular screening, capacity = ∞.** New `event_screen.R`: one-time staggered screen; true positives are confirmed and treated immediately (`TreatA=1` → `hr.TrtS1S2` cuts S1→S2; `treated_s1` counter replaces `sick1`, utility `u.TrtA`). One-time screen + confirm costs stored as attributes, folded in by `add_attr_costs()`. Everyone positive is treated at once — no queue. |
+| **model-8** | **Field test comparison, capacity = ∞.** Two strategies side-by-side (`mol` vs `field`). Field's coverage expansion dominates its sensitivity loss → **SE quadrant** (lower total cost, more total QALYs). False positives appear here (they consume confirm costs). |
+| **model-9** | **Exogenous queue.** A confirmation wait drawn from a lognormal (`confirm_wait_logmean/logsd`, mean ~18 wks) is inserted between positive screen and treatment; disease progresses during the wait (S1 can advance to S2, losing the benefit). A "Confirm" registry event fires at the stored `tConfirm`. |
+| **model10** | **Endogenous queue — approach A.** Real finite-capacity `confirm` resource + global FIFO waitlist. Wait computed analytically from live `get_server_count`/`get_capacity` (M/M/c-flavored); a fire-time guard (`get_confirm`) seizes only when a slot is genuinely free, so the patient never blocks. `main_loop.R` untouched. Honest caveat: the wait *distribution* is a single-Exp approximation. |
+| **model11** | **Claim-ticket companion — approach B. Most defensible.** On a positive screen the patient `clone(n=2, self, companion)`s; the companion holds the real blocking `seize("confirm")` FIFO queue and `send()`s an `acq_<pid>` signal (keyed on an inherited `pid`) that fires a "Confirm acquired" registry event so reactive resampling re-draws at treated rates. Exact emergent FIFO queue. A=B on mean endpoints is checked by replication (see CRN note above). |
 
-**Files deleted in the model-7+ rewrite** (kept for reference only):
-- Old `model-7.R`–`model-9.R`, `model10.R`–`model12.R`, `model-A.R`, `model-B.R`
+**Files deleted in the model-7+ rewrites** (kept for reference only):
+- Old treatment-arc `model-A.R`, `model-B.R`, `model12.R`
 - `event_sick1-v2.R`, `event_healthy-v2.R`, `become-sick-cloned.R`, old `inputs2.R`
 
 ---
