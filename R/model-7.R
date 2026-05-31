@@ -1,93 +1,138 @@
-  #############################################################################
- #
-#
-# Copyright 2015, 2025 Shawn Garbett, Vanderbilt University Medical Center
-#
-# Permission to use, copy, modify, distribute, and sell this software and
-# its documentation for any purpose is hereby granted without fee,
-# provided that the above copyright notice appear in all copies and that
-# both that copyright notice and this permission notice appear in
-# supporting documentation. No representations are made about the
-# suitability of this software for any purpose.  It is provided "as is"
-# without express or implied warranty.
-#
 ###############################################################################
-
-# This is an empty model with nothing but entry/exit of a patient trajectory
+# model-7.R — molecular screening, capacity = ∞
+#
+# Adds a one-time population screen to the full Sick-Sicker natural history
+# (model-6).  The molecular test reaches 12 % of the eligible population.
+# True positives (screen-detected S1 patients) are confirmed and treated
+# immediately — no queue yet.  Treatment reduces S1→S2 progression by 80 %
+# and improves utility.
+#
+# New in this model
+#   counter   : treated_s1  (replaces sick1 while on treatment)
+#   event     : Screen       (one-time, reactive = FALSE, fires at t.screen)
+#   parameters: inputs2.R   (cov.mol, sens.mol, spec.mol, c.screen.mol,
+#                             c.confirm, hr.TrtS1S2, c.TrtA, u.TrtA)
+#
+# One-time screening and confirmation costs are stored as patient attributes
+# ("ScreenCost", "ConfirmCost") and extracted in des_run().
+###############################################################################
 
 library(simmer)
 
 source('discount.R')
-source('inputs.R')     # Your Model Parameters
-source('main_loop.R')  # Boilerplate code
-  
-# Events (State Transitions)
+source('inputs2.R')    # extends inputs.R with screening parameters
+source('main_loop.R')
+
 source('event_death3.R')
-source('event_sick1-v2.R')
-source('event_healthy-v2.R')
+source('event_sick1.R')
+source('event_healthy.R')
 source('event_sick2.R')
-  
-# Resource or "Counters"
-#
-# These are used to track things that incur costs or qalys, or other
-# things of which a count might be of interest.
-# Infinite in quantity
+source('event_screen.R')
+
+# ---------------------------------------------------------------------------
+# Override sick2: release treated_s1 (not sick1) when a treated patient
+# progresses to S2.
+# ---------------------------------------------------------------------------
+sick2 <- function(traj, inputs)
+{
+  traj |>
+  set_attribute("State", 2) |>
+  branch(
+    function() if (isTRUE(get_attribute(env, "TreatA") == 1L)) 1L else 2L,
+    continue = c(TRUE, TRUE),
+    trajectory() |> release("treated_s1"),   # was on treatment
+    trajectory() |> release("sick1")          # was untreated
+  ) |>
+  seize("sick2")
+}
+
+# Override healthy: same logic for recovering out of S1.
+healthy <- function(traj, inputs)
+{
+  traj |>
+  set_attribute("State", 0) |>
+  branch(
+    function() if (isTRUE(get_attribute(env, "TreatA") == 1L)) 1L else 2L,
+    continue = c(TRUE, TRUE),
+    trajectory() |> release("treated_s1") |> set_attribute("TreatA", 0),
+    trajectory() |> release("sick1")
+  ) |>
+  seize("healthy")
+}
+
+# Override years_till_sick2: apply 80 % hazard reduction for treated patients.
+years_till_sick2 <- function(inputs)
+{
+  if (get_attribute(env, "State") != 1) return(inputs$horizon + 1)
+  hr <- if (isTRUE(get_attribute(env, "TreatA") == 1L)) inputs$hr.TrtS1S2 else 1.0
+  rexp(1, inputs$r.S1S2 * hr)
+}
+
+# ---------------------------------------------------------------------------
+# Counters
+# ---------------------------------------------------------------------------
 counters <- c(
   "time_in_model",
   "death",
   "healthy",
-  "sick1",
-  "sick2",
-  "treat"
+  "sick1",       # untreated S1
+  "treated_s1",  # S1 on treatment (replaces sick1 after screen detection)
+  "sick2"
 )
-  
-# Define starting state of patient
+
+# ---------------------------------------------------------------------------
+# Patient initialisation
+# ---------------------------------------------------------------------------
 initialize_patient <- function(traj, inputs)
 {
   traj                   |>
   seize("time_in_model") |>
   set_attribute("AgeInitial", function() sample(20:30, 1)) |>
-  set_attribute("State", 0) |> # Patients start healthy
-  seize("healthy")       |>
-  set_attribute("Treat", function() inputs$strategy == 'treat')
+  set_attribute("State",    0) |>
+  set_attribute("TreatA",   0) |>
+  set_attribute("Screened", 0) |>
+  seize("healthy")
 }
 
-# Cleanup function if a termination occurs
-# Good for releasing any seized resources based on state.
+# ---------------------------------------------------------------------------
+# Termination: release whichever S1 resource the patient currently holds.
+# ---------------------------------------------------------------------------
 cleanup_on_termination <- function(traj, inputs)
 {
-  traj |> 
+  traj |>
   release("time_in_model") |>
-  branch( 
-    function() get_attribute(env, "State")+1,
-      continue = rep(TRUE, 3),
-      trajectory() |> release("healthy"),
-      trajectory() |> release("sick1"),
-      trajectory() |> release("sick2") 
-  ) |>
-  branch( # Assigned to treatment and not healthy
-    function() (get_attribute(env, "Treat")  && 
-                get_attribute(env, "State")) + 1,
-    continue = rep(TRUE, 2),
-    trajectory(),  # No Treatment
-    trajectory() |> release('treat')
+  branch(
+    function() {
+      state  <- get_attribute(env, "State")
+      treatA <- get_attribute(env, "TreatA")
+      if      (state == 0)                           1L  # healthy
+      else if (state == 1 && isTRUE(treatA == 1L))  3L  # treated S1
+      else if (state == 1)                           2L  # untreated S1
+      else                                           4L  # S2
+    },
+    continue = rep(TRUE, 4),
+    trajectory() |> release("healthy"),
+    trajectory() |> release("sick1"),
+    trajectory() |> release("treated_s1"),
+    trajectory() |> release("sick2")
   )
 }
 
 terminate_simulation <- function(traj, inputs)
 {
   traj |>
-  branch( function() 1, 
-          continue=FALSE,
-          trajectory() |> cleanup_on_termination(inputs)
-        )
+  branch(function() 1, continue = FALSE,
+    trajectory() |> cleanup_on_termination(inputs)
+  )
 }
 
-# Main Event registry
+# ---------------------------------------------------------------------------
+# Event registry
+# ---------------------------------------------------------------------------
 event_registry <- list(
   list(name          = "Terminate at time horizon",
        attr          = "aTerminate",
-       time_to_event = function(inputs) inputs$horizon-now(env),
+       time_to_event = function(inputs) inputs$horizon - now(env),
        func          = terminate_simulation,
        reactive      = FALSE),
   list(name          = "Death",
@@ -109,91 +154,149 @@ event_registry <- list(
        attr          = "aSick2",
        time_to_event = years_till_sick2,
        func          = sick2,
-       reactive      = TRUE)
+       reactive      = TRUE),
+  list(name          = "Screen",
+       attr          = "aScreen",
+       time_to_event = years_till_screen,
+       func          = screen,
+       reactive      = FALSE)
 )
 
+# ---------------------------------------------------------------------------
+# Costing
+# ---------------------------------------------------------------------------
 cost_arrivals <- function(arrivals, inputs)
 {
-  arrivals$cost  <- 0  # No costs yet
-  arrivals$dcost <- 0  # No discounted costs either
-  
-  selector = arrivals$resource == 'healthy'
-  arrivals$cost[selector] <- inputs$c.H *
+  arrivals$cost  <- 0
+  arrivals$dcost <- 0
+
+  selector <- arrivals$resource == 'healthy'
+  arrivals$cost[selector]  <- inputs$c.H *
     (arrivals$end_time[selector] - arrivals$start_time[selector])
   arrivals$dcost[selector] <- discount_value(inputs$c.H,
     arrivals$start_time[selector], arrivals$end_time[selector])
-  
-  selector = arrivals$resource == 'sick1'
-  arrivals$cost[selector] <- inputs$c.S1 *
+
+  selector <- arrivals$resource == 'sick1'
+  arrivals$cost[selector]  <- inputs$c.S1 *
     (arrivals$end_time[selector] - arrivals$start_time[selector])
   arrivals$dcost[selector] <- discount_value(inputs$c.S1,
     arrivals$start_time[selector], arrivals$end_time[selector])
-  
-  selector = arrivals$resource == 'sick2'
-  arrivals$cost[selector] <- inputs$c.S2 *
+
+  # treated_s1: full annual cost = c.S1 + c.TrtA
+  selector <- arrivals$resource == 'treated_s1'
+  arrivals$cost[selector]  <- (inputs$c.S1 + inputs$c.TrtA) *
+    (arrivals$end_time[selector] - arrivals$start_time[selector])
+  arrivals$dcost[selector] <- discount_value(inputs$c.S1 + inputs$c.TrtA,
+    arrivals$start_time[selector], arrivals$end_time[selector])
+
+  selector <- arrivals$resource == 'sick2'
+  arrivals$cost[selector]  <- inputs$c.S2 *
     (arrivals$end_time[selector] - arrivals$start_time[selector])
   arrivals$dcost[selector] <- discount_value(inputs$c.S2,
     arrivals$start_time[selector], arrivals$end_time[selector])
- 
-  selector = arrivals$resource == 'treat'
-  arrivals$cost[selector] <- inputs$c.Trt *
-    (arrivals$end_time[selector] - arrivals$start_time[selector])
-  arrivals$dcost[selector] <- discount_value(inputs$c.Trt,
-    arrivals$start_time[selector], arrivals$end_time[selector])
- 
+
   arrivals
 }
 
+# ---------------------------------------------------------------------------
+# QALYs
+# ---------------------------------------------------------------------------
 qaly_arrivals <- function(arrivals, inputs)
 {
-  arrivals$qaly  <- 0  # No qaly yet
-  arrivals$dqaly <- 0  # No discounted qaly either
-  
+  arrivals$qaly  <- 0
+  arrivals$dqaly <- 0
+
   selector <- arrivals$resource == 'healthy'
-  arrivals$qaly[selector] <-
-    inputs$u.H*
-     (arrivals$end_time[selector] - arrivals$start_time[selector])
-  arrivals$dqaly[selector] <- 
-      discount_value(inputs$u.H, 
-                     arrivals$start_time[selector],
-                     arrivals$end_time[selector])
-  
+  arrivals$qaly[selector]  <- inputs$u.H *
+    (arrivals$end_time[selector] - arrivals$start_time[selector])
+  arrivals$dqaly[selector] <- discount_value(inputs$u.H,
+    arrivals$start_time[selector], arrivals$end_time[selector])
+
   selector <- arrivals$resource == 'sick1'
-  uS1 <- if(inputs$strategy == 'treat') inputs$u.Trt else inputs$u.S1
-  arrivals$qaly[selector] <-
-    uS1*
-     (arrivals$end_time[selector] - arrivals$start_time[selector])
-  arrivals$dqaly[selector] <- 
-      discount_value(uS1, 
-                     arrivals$start_time[selector],
-                     arrivals$end_time[selector])
-  
+  arrivals$qaly[selector]  <- inputs$u.S1 *
+    (arrivals$end_time[selector] - arrivals$start_time[selector])
+  arrivals$dqaly[selector] <- discount_value(inputs$u.S1,
+    arrivals$start_time[selector], arrivals$end_time[selector])
+
+  selector <- arrivals$resource == 'treated_s1'
+  arrivals$qaly[selector]  <- inputs$u.TrtA *
+    (arrivals$end_time[selector] - arrivals$start_time[selector])
+  arrivals$dqaly[selector] <- discount_value(inputs$u.TrtA,
+    arrivals$start_time[selector], arrivals$end_time[selector])
+
   selector <- arrivals$resource == 'sick2'
-  arrivals$qaly[selector] <-
-    inputs$u.S2*
-     (arrivals$end_time[selector] - arrivals$start_time[selector])
-  arrivals$dqaly[selector] <- 
-      discount_value(inputs$u.S2, 
-                     arrivals$start_time[selector],
-                     arrivals$end_time[selector])
-  
+  arrivals$qaly[selector]  <- inputs$u.S2 *
+    (arrivals$end_time[selector] - arrivals$start_time[selector])
+  arrivals$dqaly[selector] <- discount_value(inputs$u.S2,
+    arrivals$start_time[selector], arrivals$end_time[selector])
+
   arrivals
 }
 
-# This does a single DES run versus the defined inputs.
+# ---------------------------------------------------------------------------
+# Helper: fold one-time attribute costs into the time_in_model rows.
+# ---------------------------------------------------------------------------
+add_attr_costs <- function(arrivals, inputs)
+{
+  attrs <- get_mon_attributes(env)
+  oc    <- attrs[attrs$key %in% c("ScreenCost", "ConfirmCost"), , drop = FALSE]
+  if (nrow(oc) == 0) return(arrivals)
+
+  undsum <- tapply(oc$value, oc$name, sum)
+  dscsum <- tapply(
+    discount_value(oc$value, oc$time, annual_rate = inputs$d.r),
+    oc$name, sum)
+
+  idx <- which(arrivals$resource == "time_in_model")
+  nm  <- arrivals$name[idx]
+  arrivals$cost[idx]  <- arrivals$cost[idx]  +
+    ifelse(is.na(undsum[nm]), 0, undsum[nm])
+  arrivals$dcost[idx] <- arrivals$dcost[idx] +
+    ifelse(is.na(dscsum[nm]), 0, dscsum[nm])
+  arrivals
+}
+
+# ---------------------------------------------------------------------------
+# DES run
+# ---------------------------------------------------------------------------
 des_run <- function(inputs)
 {
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
-  env |> 
+  env  |>
     create_counters(counters) |>
-    add_generator("patient", traj, at(rep(0, inputs$N)), mon=2) |>
-    run(inputs$horizon+1/365) |> # Simulate just past horizon (in years)
+    add_generator("patient", traj, at(rep(0, inputs$N)), mon = 2) |>
+    run(inputs$horizon + 1/365) |>
     wrap()
-        
-  get_mon_arrivals(env, per_resource = T) |>
-    cost_arrivals(inputs) |> 
-    qaly_arrivals(inputs) 
+
+  get_mon_arrivals(env, per_resource = TRUE) |>
+    cost_arrivals(inputs) |>
+    qaly_arrivals(inputs) |>
+    add_attr_costs(inputs)
 }
 
+# ---------------------------------------------------------------------------
+# Experiment: no-screen vs molecular screening
+# ---------------------------------------------------------------------------
+summarise_run <- function(r) {
+  n <- length(unique(r$name))
+  data.frame(
+    dcost = sum(r$dcost) / n,
+    dqaly = sum(r$dqaly) / n
+  )
+}
 
+set.seed(42)
+run_noscreen <- des_run(modifyList(inputs, list(N = 200, strategy = 'noscreen')))
+set.seed(42)
+run_mol      <- des_run(modifyList(inputs, list(N = 200, strategy = 'mol')))
+
+res_noscreen <- summarise_run(run_noscreen)
+res_mol      <- summarise_run(run_mol)
+
+icer <- (res_mol$dcost - res_noscreen$dcost) / (res_mol$dqaly - res_noscreen$dqaly)
+cat(sprintf("No screen : dcost = %8.0f  dQALY = %.3f\n",
+            res_noscreen$dcost, res_noscreen$dqaly))
+cat(sprintf("Molecular : dcost = %8.0f  dQALY = %.3f\n",
+            res_mol$dcost, res_mol$dqaly))
+cat(sprintf("ICER (mol vs no-screen) = %.0f per QALY\n", icer))
