@@ -1,0 +1,16 @@
+Running 30 replications x {mol,field} x {A,B} at N=1000 (CRN off)...
+
+=== Approach A (model10) vs B (model11): paired over 30 independent seeds ===
+
+-- QALYs --
+mol_dqaly    A=   13.269 (se 0.024)  B=   13.275 (se 0.020)  B-A=  +0.006  95%CI[-0.054,+0.066] p=0.843  agree
+field_dqaly  A=   13.436 (se 0.030)  B=   13.441 (se 0.033)  B-A=  +0.005  95%CI[-0.060,+0.071] p=0.875  agree
+d_dqaly      A=    0.167 (se 0.033)  B=    0.166 (se 0.030)  B-A=  -0.001  95%CI[-0.088,+0.087] p=0.985  agree
+
+-- Costs ($1000s) --
+mol_dcost    A=   99.275 (se 0.374)  B=   99.338 (se 0.427)  B-A=  +0.064  95%CI[-1.003,+1.130] p=0.904  agree
+field_dcost  A=   98.170 (se 0.327)  B=   97.574 (se 0.364)  B-A=  -0.596  95%CI[-1.641,+0.450] p=0.253  agree
+d_dcost      A=   -1.105 (se 0.432)  B=   -1.764 (se 0.519)  B-A=  -0.659  95%CI[-2.311,+0.992] p=0.421  agree
+
+Key endpoint is d_dqaly / d_dcost (the field-minus-molecular CEA result).
+'agree' = paired 95% CI brackets 0.
