@@ -74,9 +74,7 @@ companion_trajectory <- function(inputs) {
 # ---------------------------------------------------------------------------
 spawn_confirm_companion <- function(traj, inputs, is_tp) {
   traj |>
-    set_attribute("ScreenCost", function() {
-      if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-    }) |>
+    set_attribute("ScreenCost",  function() screen_unit_cost(inputs)) |>
     set_attribute("ConfirmCost", function() inputs$c.confirm) |>
     set_attribute("IsTruePos",   is_tp) |>
     # arm the per-patient acquire listener BEFORE cloning the companion
@@ -101,19 +99,23 @@ screen <- function(traj, inputs) {
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
-      u_tp <- draw_unif("screen"); u_fp <- draw_unif("screen")   # CRN
-      if (state >= 2)          return(1L)
+      u_cov <- draw_unif("screen"); u_res <- draw_unif("screen")   # CRN
       if (strat == 'noscreen') return(1L)
+      if (state >= 2)          return(1L)
+      if (u_cov >= cov)        return(1L)   # not reached
 
-      if (state == 1L && u_tp < cov * sens)       return(2L)  # TP
-      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)  # FP
-      return(1L)
+      if (state == 1L && u_res < sens)       return(2L)  # TP
+      if (state == 0L && u_res < (1 - spec)) return(3L)  # FP
+      return(4L)                                          # screened negative
     },
-    continue = rep(TRUE, 3),
+    continue = rep(TRUE, 4),
 
-    trajectory(),                                           # not positive
+    trajectory(),                                           # not screened
     trajectory() |> spawn_confirm_companion(inputs, 1),     # TP -> companion
-    trajectory() |> spawn_confirm_companion(inputs, 0)      # FP -> companion
+    trajectory() |> spawn_confirm_companion(inputs, 0),     # FP -> companion
+    ## screened negative — test cost only
+    trajectory() |>
+      set_attribute("ScreenCost", function() screen_unit_cost(inputs))
   )
 }
 
@@ -381,11 +383,13 @@ des_run <- function(inputs, seed = 12345L)
 {
   crn_reset(seed)         # arm per-patient CRN banks for this run
   set.seed(seed)
+  # Confirmation capacity is specified per 1,000 patients; scale to absolute.
+  n.cap <- max(1, round(inputs$cap.confirm.per1000 * inputs$N / 1000))
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
   env  |>
     create_counters(counters) |>
-    add_resource("confirm", capacity = inputs$n.confirm.cap, queue_size = Inf) |>
+    add_resource("confirm", capacity = n.cap, queue_size = Inf) |>
     add_generator("patient", traj, at(rep(0, inputs$N)), mon = 2) |>
     run(inputs$horizon + 1/365) |>
     wrap()

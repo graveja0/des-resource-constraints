@@ -35,6 +35,10 @@ years_till_screen <- function(inputs)
   max(0, get_attribute(env, "tScreen") - now(env))
 }
 
+# Cost of one screening test for the current strategy.
+screen_unit_cost <- function(inputs)
+  if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
+
 screen <- function(traj, inputs)
 {
   traj |>
@@ -48,39 +52,41 @@ screen <- function(traj, inputs)
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
 
-      # Draw BOTH uniforms for every alive patient FIRST, regardless of state or
-      # strategy, so the per-patient "screen" stream advances identically across
-      # arms (common random numbers). Only the threshold below differs by arm.
-      u_tp <- draw_unif("screen")   # true-positive check  (state = 1)
-      u_fp <- draw_unif("screen")   # false-positive check (state = 0)
+      # COVERAGE is now separate from RESULT: u_cov decides whether the program
+      # reaches (and tests) this person; u_res is the test outcome. Drawing both
+      # first keeps the per-patient "screen" stream aligned across arms (CRN).
+      u_cov <- draw_unif("screen")   # reached by the program?
+      u_res <- draw_unif("screen")   # test result
 
-      if (state >= 2)            return(1L)   # S2 or dead — no screen benefit
-      if (strat == 'noscreen')   return(1L)   # draws consumed, no program
+      if (strat == 'noscreen') return(1L)   # no program
+      if (state >= 2)          return(1L)   # symptomatic — outside screening
+      if (u_cov >= cov)        return(1L)   # not reached — no test, no cost
 
-      if (state == 1L && u_tp < cov * sens)       return(2L)  # true positive
-      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)  # false positive
-      return(1L)
+      # Reached & asymptomatic -> a test is performed (pays c.screen below):
+      if (state == 1L && u_res < sens)       return(2L)  # true positive
+      if (state == 0L && u_res < (1 - spec)) return(3L)  # false positive
+      return(4L)                                          # screened negative
     },
-    continue = rep(TRUE, 3),
+    continue = rep(TRUE, 4),
 
-    ## branch 1: no positive result — nothing happens
+    ## branch 1: not screened (no program / symptomatic / not reached) — no cost
     trajectory(),
 
-    ## branch 2: true positive (in S1, detected and immediately confirmed)
+    ## branch 2: true positive — test + confirmatory workup, then treat
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
+      set_attribute("ScreenCost",  function() screen_unit_cost(inputs)) |>
       set_attribute("ConfirmCost", function() inputs$c.confirm) |>
       set_attribute("TreatA", 1) |>
       release("sick1")           |>
       seize("treated_s1"),
 
-    ## branch 3: false positive (in H, workup cost but no treatment)
+    ## branch 3: false positive — test + confirmatory workup, no treatment
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
-      set_attribute("ConfirmCost", function() inputs$c.confirm)
+      set_attribute("ScreenCost",  function() screen_unit_cost(inputs)) |>
+      set_attribute("ConfirmCost", function() inputs$c.confirm),
+
+    ## branch 4: screened negative — test cost only (the cost previously omitted)
+    trajectory() |>
+      set_attribute("ScreenCost",  function() screen_unit_cost(inputs))
   )
 }

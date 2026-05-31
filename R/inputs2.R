@@ -51,12 +51,14 @@ inputs <- modifyList(inputs, list(
   confirm_wait_logsd   =  0.425,
 
   # finite confirmation capacity (model-10 and model-11)
-  # Throughput = n.confirm.cap * mu.confirm = 6 * 2 = 12 confirmations/yr.
-  # Field generates ~18 positives/yr (ρ ≈ 1.5 — the queue genuinely saturates,
-  # ~30% of would-be-treated patients progress while waiting); molecular ~5/yr
-  # (ρ ≈ 0.4 — served promptly). This is where accounting for the bottleneck
-  # materially erodes the field test's apparent advantage.
-  n.confirm.cap     =    6,    # concurrent confirmation slots (per simulation unit)
+  # Parameterised PER 1,000 PATIENTS so it scales with N. des_run() converts it
+  # to absolute slots: n.confirm.cap = round(cap.confirm.per1000 * N / 1000).
+  # At 6/1000 and mu=2: throughput = 6 * 2 = 12 confirmations/yr per 1,000.
+  # Field generates ~18 positives/yr per 1,000 (ρ ≈ 1.5 — the queue genuinely
+  # saturates, ~30% of would-be-treated patients progress while waiting);
+  # molecular ~5/yr (ρ ≈ 0.4 — served promptly). This is where accounting for
+  # the bottleneck materially erodes the field test's apparent advantage.
+  cap.confirm.per1000 =  4,    # confirmation slots per 1,000 simulated patients
   mu.confirm        =    2,    # service rate: ~2 completions per slot per year
   rate_admit_free   = 1000,    # near-instant admit when a slot is genuinely free
 

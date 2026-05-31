@@ -45,24 +45,23 @@ screen <- function(traj, inputs)
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
-      u_tp <- draw_unif("screen"); u_fp <- draw_unif("screen")   # CRN
-      if (state >= 2)          return(1L)
+      u_cov <- draw_unif("screen"); u_res <- draw_unif("screen")   # CRN
       if (strat == 'noscreen') return(1L)
+      if (state >= 2)          return(1L)
+      if (u_cov >= cov)        return(1L)   # not reached
 
-      if (state == 1L && u_tp < cov * sens)       return(2L)  # TP
-      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)  # FP
-      return(1L)
+      if (state == 1L && u_res < sens)       return(2L)  # TP
+      if (state == 0L && u_res < (1 - spec)) return(3L)  # FP
+      return(4L)                                          # screened negative
     },
-    continue = rep(TRUE, 3),
+    continue = rep(TRUE, 4),
 
-    ## branch 1: no positive result
+    ## branch 1: not screened
     trajectory(),
 
     ## branch 2: true positive — defer confirmation
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
+      set_attribute("ScreenCost",      function() screen_unit_cost(inputs)) |>
       set_attribute("ConfirmCost",     function() inputs$c.confirm) |>
       set_attribute("TreatA_pending",  1) |>
       set_attribute("tConfirm", function()
@@ -71,10 +70,12 @@ screen <- function(traj, inputs)
 
     ## branch 3: false positive — pay costs, no treatment
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
-      set_attribute("ConfirmCost", function() inputs$c.confirm)
+      set_attribute("ScreenCost",  function() screen_unit_cost(inputs)) |>
+      set_attribute("ConfirmCost", function() inputs$c.confirm),
+
+    ## branch 4: screened negative — test cost only
+    trajectory() |>
+      set_attribute("ScreenCost",  function() screen_unit_cost(inputs))
   )
 }
 

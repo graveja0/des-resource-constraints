@@ -65,23 +65,22 @@ screen <- function(traj, inputs)
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
-      u_tp <- draw_unif("screen"); u_fp <- draw_unif("screen")   # CRN
-      if (state >= 2)          return(1L)
+      u_cov <- draw_unif("screen"); u_res <- draw_unif("screen")   # CRN
       if (strat == 'noscreen') return(1L)
+      if (state >= 2)          return(1L)
+      if (u_cov >= cov)        return(1L)   # not reached
 
-      if (state == 1L && u_tp < cov * sens)       return(2L)
-      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)
-      return(1L)
+      if (state == 1L && u_res < sens)       return(2L)
+      if (state == 0L && u_res < (1 - spec)) return(3L)
+      return(4L)                                          # screened negative
     },
-    continue = rep(TRUE, 3),
+    continue = rep(TRUE, 4),
 
-    trajectory(),   # not positive
+    trajectory(),   # not screened
 
     ## TP: join waitlist, record type so confirm knows to treat
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
+      set_attribute("ScreenCost",     function() screen_unit_cost(inputs)) |>
       set_attribute("ConfirmCost",    function() inputs$c.confirm) |>
       set_attribute("WaitingConfirm", 1)  |>
       set_attribute("IsTruePos",      1)  |>
@@ -90,14 +89,16 @@ screen <- function(traj, inputs)
 
     ## FP: join waitlist, pay costs, no treatment on confirmation
     trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
+      set_attribute("ScreenCost",     function() screen_unit_cost(inputs)) |>
       set_attribute("ConfirmCost",    function() inputs$c.confirm) |>
       set_attribute("WaitingConfirm", 1)  |>
       set_attribute("IsTruePos",      0)  |>
       set_attribute("HasConfirm",     0)  |>
-      set_attribute("joinWL", function() { wl_join(get_name(env)); 1L })
+      set_attribute("joinWL", function() { wl_join(get_name(env)); 1L }),
+
+    ## branch 4: screened negative — test cost only (no workup, no queue)
+    trajectory() |>
+      set_attribute("ScreenCost",     function() screen_unit_cost(inputs))
   )
 }
 
@@ -411,11 +412,13 @@ des_run <- function(inputs, seed = 12345L)
   crn_reset(seed)         # arm per-patient CRN banks for this run
   set.seed(seed)
   reset_waitlist()
+  # Confirmation capacity is specified per 1,000 patients; scale to absolute.
+  n.cap <- max(1, round(inputs$cap.confirm.per1000 * inputs$N / 1000))
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
   env  |>
     create_counters(counters) |>
-    add_resource("confirm", capacity = inputs$n.confirm.cap) |>
+    add_resource("confirm", capacity = n.cap) |>
     add_generator("patient", traj, at(rep(0, inputs$N)), mon = 2) |>
     run(inputs$horizon + 1/365) |>
     wrap()
