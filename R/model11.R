@@ -1,34 +1,37 @@
 ###############################################################################
-# model11.R — FIFO companion trajectory, approach B  (most defensible)
+# model11.R — claim-ticket companion, approach B  (most defensible)
 #
-# Same finite confirmation resource as model10 (approach A), but the queue
-# is now modelled via a COMPANION TRAJECTORY that holds a real blocking
-# seize().  The main disease trajectory is NEVER blocked: it uses
-# send() to launch the companion, then trap() to wait for the companion's
-# signal that a slot was acquired.  The companion's blocking seize() drives
-# the exact emergent FIFO queue — no analytic approximation.
+# Same finite confirmation resource as model10 (approach A), but the queue is
+# now the EXACT emergent FIFO queue of a real blocking seize(), not an analytic
+# approximation. The patient NEVER blocks: when screen-positive it spawns a
+# lightweight COMPANION ("claim ticket") via clone(); the companion's only job
+# is to seize() the finite "confirm" resource. Blocking in that queue is fine —
+# the companion carries no state tallies, so there is no double-release.
 #
-# Why this is more defensible than approach A
-#   - The wait DISTRIBUTION is exact (whatever simmer's scheduler produces
-#     under FCFS), not a single-Exp approximation.
-#   - Capacity is enforced exactly by simmer's native resource management.
-#   - For mean-based CEA endpoints (deaths, S2-time, dQALY, dcost) approaches
-#     A and B agree within Monte-Carlo noise.  They differ on the wait
-#     distribution, which matters for tail / variance-sensitive analyses.
+# MECHANISM (faithful to validation/probe-B-claim-ticket.R)
+#   - Per-patient signals are keyed on a numeric "pid" attribute that the clone
+#     INHERITS, so the companion's send() names the right patient. (Keying on
+#     get_name(env) fails: inside the companion that returns the companion's
+#     own name.)
+#   - On a positive screen the patient: arms trap(acq_<pid>), then
+#     clone(n = 2, self, companion) + synchronize(wait = FALSE). The self-clone
+#     reaches synchronize instantly and re-enters the rollback() event loop; the
+#     companion blocks in seize("confirm") and is discarded at synchronize after
+#     its course.
+#   - When the companion ACQUIRES a slot it send()s acq_<pid>. The trap handler
+#     does NOT treat directly — it sets confirmReady = 1 and forces the
+#     "Confirm acquired" REGISTRY event to fire now (aConfirmAcq = now). That
+#     event runs through process_events so the reactive resample re-draws
+#     sick2/healthy at the *treated* rates. (Treating inside the trap handler
+#     alone would not resample the competing risks — that was bug #3.)
+#   - TEARDOWN: leaving S1 (recover / progress / die) send()s abandon_<pid>; a
+#     still-queued companion renege_if()s out (renege_abort() after seize means
+#     abandon is a no-op once a slot is held). This mirrors model10's wl_leave,
+#     so A and B agree on the contended population.
 #
-# Companion mechanism
-#   1. Screen positive: main trajectory calls send(<patient-signal>), launching
-#      a companion arrival that will queue for the "confirm" resource.
-#   2. Main trajectory continues running (disease progresses).
-#   3. Companion seize("confirm") blocks until a slot is free (FIFO).
-#   4. When the companion acquires a slot, it calls send(<confirm-signal>)
-#      back to the main trajectory.
-#   5. Main trajectory is trap()-ing for the confirm signal; when it fires,
-#      main checks state and starts treatment if still in S1.
-#   6. After a treatment course, companion releases "confirm".
-#
-# Invariants preserved: patient never blocks; disease always progresses;
-# capacity-n.confirm.cap is enforced exactly; no leaks.
+# For mean CEA endpoints (deaths, S2-time, dQALY, dcost) approaches A and B
+# agree within Monte-Carlo noise; they differ only on the wait DISTRIBUTION
+# (B exact FCFS, A single-Exp analytic).
 ###############################################################################
 
 library(simmer)
@@ -36,6 +39,7 @@ library(simmer)
 source('discount.R')
 source('inputs2.R')
 source('main_loop.R')
+source('crn.R')        # per-patient common-random-number banks
 
 source('event_death3.R')
 source('event_sick1.R')
@@ -44,97 +48,109 @@ source('event_sick2.R')
 source('event_screen.R')   # provides years_till_screen; screen() overridden below
 
 # ---------------------------------------------------------------------------
-# Signal name helpers (one per patient, globally unique)
+# Per-patient signal names, keyed on the inherited "pid" attribute.
 # ---------------------------------------------------------------------------
-req_signal  <- function() paste0("req_",  get_name(env))   # main → companion
-conf_signal <- function() paste0("conf_", get_name(env))   # companion → main
+sig_acq     <- function() paste0("acq_",     get_attribute(env, "pid"))
+sig_abandon <- function() paste0("abandon_", get_attribute(env, "pid"))
 
 # ---------------------------------------------------------------------------
-# Companion trajectory: queues for "confirm", signals main when acquired.
+# Companion claim-ticket: queues for the finite "confirm" resource, signals the
+# patient on acquire, holds the slot for the workup, then frees it. Carries NO
+# state tallies. Duration draw stays on the global RNG (queue-dynamics noise);
+# the patient's own trajectory is fully on CRN banks, so this cannot desync it.
 # ---------------------------------------------------------------------------
-make_companion_traj <- function(inputs) {
+companion_trajectory <- function(inputs) {
   trajectory("companion") |>
-  seize("confirm") |>                              # blocks here until slot free
-  send(function() conf_signal()) |>               # wake up main trajectory
-  timeout(function() rexp(1, inputs$mu.confirm)) |> # hold slot for treatment course
-  release("confirm")
+    renege_if(sig_abandon, out = trajectory()) |>   # leave queue if patient abandons
+    seize("confirm", 1) |>                           # BLOCKS here until a slot frees
+    renege_abort() |>                                # got a slot: cancel the renege
+    send(sig_acq) |>                                 # tell the patient: confirmed
+    timeout(function() rexp(1, inputs$mu.confirm)) |># hold slot for the workup
+    release("confirm", 1)
 }
 
 # ---------------------------------------------------------------------------
-# Override screen(): launch companion on positive result; main traps for reply.
+# Override screen(): on a positive result spawn the companion + arm the trap.
 # ---------------------------------------------------------------------------
-screen <- function(traj, inputs)
-{
+spawn_confirm_companion <- function(traj, inputs, is_tp) {
+  traj |>
+    set_attribute("ScreenCost", function() {
+      if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
+    }) |>
+    set_attribute("ConfirmCost", function() inputs$c.confirm) |>
+    set_attribute("IsTruePos",   is_tp) |>
+    # arm the per-patient acquire listener BEFORE cloning the companion
+    trap(sig_acq,
+         handler = trajectory() |>
+           set_attribute("confirmReady", 1) |>
+           set_attribute("aConfirmAcq", function() now(env))) |>
+    clone(n = 2,
+          trajectory("self"),                      # patient-self: re-enters loop
+          companion_trajectory(inputs)) |>         # companion: queues for confirm
+    synchronize(wait = FALSE)                       # self survives instantly
+}
+
+screen <- function(traj, inputs) {
   traj |>
   set_attribute("Screened", 1) |>
   branch(
     function() {
-      if (inputs$strategy == 'noscreen') return(1L)
-
       state <- get_attribute(env, "State")
-      if (state >= 2) return(1L)
 
       strat <- inputs$strategy
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
+      u_tp <- draw_unif("screen"); u_fp <- draw_unif("screen")   # CRN
+      if (state >= 2)          return(1L)
+      if (strat == 'noscreen') return(1L)
 
-      if (state == 1L && runif(1) < cov * sens)       return(2L)
-      if (state == 0L && runif(1) < cov * (1 - spec)) return(3L)
+      if (state == 1L && u_tp < cov * sens)       return(2L)  # TP
+      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)  # FP
       return(1L)
     },
     continue = rep(TRUE, 3),
 
-    trajectory(),   # not positive
-
-    ## TP: pay costs, record as TP, launch companion, trap for confirm signal
-    trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
-      set_attribute("ConfirmCost",   function() inputs$c.confirm) |>
-      set_attribute("IsTruePos",     1) |>
-      set_attribute("WaitingConfirm", 1) |>
-      send(req_signal) |>
-      trap(
-        function() conf_signal(),
-        handler = trajectory() |>
-          set_attribute("WaitingConfirm", 0) |>
-          branch(
-            function() if (isTRUE(get_attribute(env, "IsTruePos") == 1L) &&
-                            get_attribute(env, "State") == 1L) 1L else 2L,
-            continue = c(TRUE, TRUE),
-            trajectory() |>
-              set_attribute("TreatA", 1) |>
-              release("sick1")           |>
-              seize("treated_s1"),
-            trajectory()
-          )
-      ),
-
-    ## FP: pay costs, launch companion (consumes a slot), no treatment
-    trajectory() |>
-      set_attribute("ScreenCost", function() {
-        if (inputs$strategy == 'mol') inputs$c.screen.mol else inputs$c.screen.field
-      }) |>
-      set_attribute("ConfirmCost",    function() inputs$c.confirm) |>
-      set_attribute("IsTruePos",      0) |>
-      set_attribute("WaitingConfirm", 1) |>
-      send(req_signal) |>
-      trap(
-        function() conf_signal(),
-        handler = trajectory() |>
-          set_attribute("WaitingConfirm", 0)
-      )
+    trajectory(),                                           # not positive
+    trajectory() |> spawn_confirm_companion(inputs, 1),     # TP -> companion
+    trajectory() |> spawn_confirm_companion(inputs, 0)      # FP -> companion
   )
 }
 
 # ---------------------------------------------------------------------------
-# Override sick2 / healthy / years_till_sick2
+# "Confirm acquired" registry event. Fires (time ~0) once the acquire-signal
+# trap has set confirmReady. Treats only a true positive still in S1.
 # ---------------------------------------------------------------------------
-sick2 <- function(traj, inputs)
-{
+years_till_confirm_acq <- function(inputs) {
+  if (get_attribute(env, "confirmReady") == 1) 0 else inputs$horizon + 1
+}
+
+confirm_acquired <- function(traj, inputs) {
   traj |>
+  branch(
+    function() if (get_attribute(env, "confirmReady") == 1 &&
+                   get_attribute(env, "IsTruePos")    == 1 &&
+                   get_attribute(env, "State")        == 1 &&
+                   get_attribute(env, "TreatA")       == 0) 1L else 2L,
+    continue = c(TRUE, TRUE),
+    ## TP still in S1: start treatment
+    trajectory() |>
+      set_attribute("confirmReady", 0) |>
+      set_attribute("TreatA", 1) |>
+      release("sick1") |>
+      seize("treated_s1"),
+    ## FP, or progressed/recovered before confirmation: just clear the flag
+    trajectory() |>
+      set_attribute("confirmReady", 0)
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Leaving S1: abandon any queued companion (mirrors model10's wl_leave).
+# ---------------------------------------------------------------------------
+sick2 <- function(traj, inputs) {
+  traj |>
+  send(sig_abandon) |>
   set_attribute("State", 2) |>
   branch(
     function() if (isTRUE(get_attribute(env, "TreatA") == 1L)) 1L else 2L,
@@ -145,9 +161,9 @@ sick2 <- function(traj, inputs)
   seize("sick2")
 }
 
-healthy <- function(traj, inputs)
-{
+healthy <- function(traj, inputs) {
   traj |>
+  send(sig_abandon) |>
   set_attribute("State", 0) |>
   branch(
     function() if (isTRUE(get_attribute(env, "TreatA") == 1L)) 1L else 2L,
@@ -158,11 +174,20 @@ healthy <- function(traj, inputs)
   seize("healthy")
 }
 
-years_till_sick2 <- function(inputs)
-{
+death <- function(traj, inputs) {
+  traj |> branch(
+    function() 1, continue = c(FALSE),
+    trajectory("Death") |>
+      send(sig_abandon) |>
+      mark("death") |>
+      terminate_simulation(inputs)
+  )
+}
+
+years_till_sick2 <- function(inputs) {
   if (get_attribute(env, "State") != 1) return(inputs$horizon + 1)
   hr <- if (isTRUE(get_attribute(env, "TreatA") == 1L)) inputs$hr.TrtS1S2 else 1.0
-  rexp(1, inputs$r.S1S2 * hr)
+  draw_exp("sick2", inputs$r.S1S2 * hr)
 }
 
 # ---------------------------------------------------------------------------
@@ -175,12 +200,16 @@ counters <- c(
 initialize_patient <- function(traj, inputs)
 {
   traj                   |>
+  set_attribute("crnInit", function() { crn_init(get_name(env)); 0 }) |>
   seize("time_in_model") |>
-  set_attribute("AgeInitial",      function() sample(20:30, 1)) |>
+  set_attribute("pid",  function() as.numeric(gsub("[^0-9]", "", get_name(env)))) |>
+  set_attribute("AgeInitial",      function() 20 + floor(draw_unif("age") * 11)) |>
+  set_attribute("tScreen", function() inputs$t.screen.start +
+    (inputs$t.screen.end - inputs$t.screen.start) * draw_unif("screen_time")) |>
   set_attribute("State",           0) |>
   set_attribute("TreatA",          0) |>
   set_attribute("IsTruePos",       0) |>
-  set_attribute("WaitingConfirm",  0) |>
+  set_attribute("confirmReady",    0) |>
   set_attribute("Screened",        0) |>
   seize("healthy")
 }
@@ -202,7 +231,13 @@ cleanup_on_termination <- function(traj, inputs)
     trajectory() |> release("healthy"),
     trajectory() |> release("sick1"),
     trajectory() |> release("treated_s1"),
-    trajectory() |> release("sick2")
+    trajectory()                              # State 2 (sick2) handled below
+  ) |>
+  branch(
+    function() if (get_attribute(env, "State") == 2) 1L else 2L,
+    continue = c(TRUE, TRUE),
+    trajectory() |> release("sick2"),
+    trajectory()
   )
 }
 
@@ -215,7 +250,7 @@ terminate_simulation <- function(traj, inputs)
 }
 
 # ---------------------------------------------------------------------------
-# Event registry
+# Event registry — adds "Confirm acquired"
 # ---------------------------------------------------------------------------
 event_registry <- list(
   list(name          = "Terminate at time horizon",
@@ -247,7 +282,12 @@ event_registry <- list(
        attr          = "aScreen",
        time_to_event = years_till_screen,
        func          = screen,
-       reactive      = FALSE)
+       reactive      = FALSE),
+  list(name          = "Confirm acquired",
+       attr          = "aConfirmAcq",
+       time_to_event = years_till_confirm_acq,
+       func          = confirm_acquired,
+       reactive      = TRUE)
 )
 
 # ---------------------------------------------------------------------------
@@ -337,19 +377,15 @@ add_attr_costs <- function(arrivals, inputs)
   arrivals
 }
 
-des_run <- function(inputs)
+des_run <- function(inputs, seed = 12345L)
 {
-  companion <- make_companion_traj(inputs)
-
+  crn_reset(seed)         # arm per-patient CRN banks for this run
+  set.seed(seed)
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
   env  |>
     create_counters(counters) |>
-    add_resource("confirm", capacity = inputs$n.confirm.cap) |>
-    # Companion generator: one arrival per req_signal, no monitoring needed
-    add_generator("companion", companion,
-                  when_activated(paste0("req_patient", seq_len(inputs$N) - 1)),
-                  mon = 0) |>
+    add_resource("confirm", capacity = inputs$n.confirm.cap, queue_size = Inf) |>
     add_generator("patient", traj, at(rep(0, inputs$N)), mon = 2) |>
     run(inputs$horizon + 1/365) |>
     wrap()
@@ -363,16 +399,15 @@ des_run <- function(inputs)
 # ---------------------------------------------------------------------------
 # Experiment: molecular vs field, approach B
 # Headline check: A and B agree on mean CEA endpoints within MC noise.
+# n is counted from time_in_model rows so companion clones don't dilute it.
 # ---------------------------------------------------------------------------
 summarise_run <- function(r) {
-  n <- length(unique(r$name))
+  n <- length(unique(r$name[r$resource == "time_in_model"]))
   data.frame(dcost = sum(r$dcost) / n, dqaly = sum(r$dqaly) / n)
 }
 
-set.seed(42)
-run_mol   <- des_run(modifyList(inputs, list(N = 200, strategy = 'mol')))
-set.seed(42)
-run_field <- des_run(modifyList(inputs, list(N = 200, strategy = 'field')))
+run_mol   <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),   seed = 42L)
+run_field <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'field')), seed = 42L)
 
 res_mol   <- summarise_run(run_mol)
 res_field <- summarise_run(run_field)

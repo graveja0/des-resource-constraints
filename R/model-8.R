@@ -21,6 +21,7 @@ library(simmer)
 source('discount.R')
 source('inputs2.R')
 source('main_loop.R')
+source('crn.R')        # per-patient common-random-number banks
 
 source('event_death3.R')
 source('event_sick1.R')
@@ -60,7 +61,7 @@ years_till_sick2 <- function(inputs)
 {
   if (get_attribute(env, "State") != 1) return(inputs$horizon + 1)
   hr <- if (isTRUE(get_attribute(env, "TreatA") == 1L)) inputs$hr.TrtS1S2 else 1.0
-  rexp(1, inputs$r.S1S2 * hr)
+  draw_exp("sick2", inputs$r.S1S2 * hr)
 }
 
 counters <- c(
@@ -70,8 +71,11 @@ counters <- c(
 initialize_patient <- function(traj, inputs)
 {
   traj                   |>
+  set_attribute("crnInit", function() { crn_init(get_name(env)); 0 }) |>
   seize("time_in_model") |>
-  set_attribute("AgeInitial", function() sample(20:30, 1)) |>
+  set_attribute("AgeInitial", function() 20 + floor(draw_unif("age") * 11)) |>
+  set_attribute("tScreen", function() inputs$t.screen.start +
+    (inputs$t.screen.end - inputs$t.screen.start) * draw_unif("screen_time")) |>
   set_attribute("State",    0) |>
   set_attribute("TreatA",   0) |>
   set_attribute("Screened", 0) |>
@@ -224,8 +228,10 @@ add_attr_costs <- function(arrivals, inputs)
   arrivals
 }
 
-des_run <- function(inputs)
+des_run <- function(inputs, seed = 12345L)
 {
+  crn_reset(seed)         # arm per-patient CRN banks for this run
+  set.seed(seed)
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
   env  |>
@@ -242,16 +248,15 @@ des_run <- function(inputs)
 
 # ---------------------------------------------------------------------------
 # Experiment: molecular vs field test — expect SE quadrant (field dominant)
+# Both arms share the SAME seed -> identical per-patient CRN banks (CRN).
 # ---------------------------------------------------------------------------
 summarise_run <- function(r) {
   n <- length(unique(r$name))
   data.frame(dcost = sum(r$dcost) / n, dqaly = sum(r$dqaly) / n)
 }
 
-set.seed(42)
-run_mol   <- des_run(modifyList(inputs, list(N = 200, strategy = 'mol')))
-set.seed(42)
-run_field <- des_run(modifyList(inputs, list(N = 200, strategy = 'field')))
+run_mol   <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),   seed = 42L)
+run_field <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'field')), seed = 42L)
 
 res_mol   <- summarise_run(run_mol)
 res_field <- summarise_run(run_field)

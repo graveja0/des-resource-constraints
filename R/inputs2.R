@@ -9,14 +9,21 @@ source('inputs.R')
 
 inputs <- modifyList(inputs, list(
 
+  N = 1000,     # default for screening models; use 5000+ for production
+
   # Pre-clinical cancer rarely resolves spontaneously — override the base
   # r.S1H = 0.70 (appropriate for the generic Sick-Sicker spine) with a
   # much smaller value.  This makes S1 a near-irreversible state and gives
   # treatment a large enough benefit to be visible at practical N.
   r.S1H = 0.05,
 
-  # --- one-time screen (fires at t.screen years after cohort entry) ----------
-  t.screen          =  2.0,    # year the screening program reaches each patient
+  # --- one-time screen, staggered over a program rollout window --------------
+  # Each patient is screened ONCE, at a time drawn ~Uniform(start, end). This
+  # spreads confirmatory-queue arrivals over the rollout (clinically realistic:
+  # a program reaches women over years, not all at once) and keeps the queue
+  # near steady state so approach A's M/M/c wait matches approach B's exact FCFS.
+  t.screen.start    =  1.0,    # program rollout begins (years)
+  t.screen.end      = 11.0,    # rollout complete (10-year window)
 
   # molecular test  (strategy = 'mol')
   cov.mol           =  0.12,   # population coverage

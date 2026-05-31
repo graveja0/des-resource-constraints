@@ -13,7 +13,9 @@
 #
 ###############################################################################
 
-# Given attributes of a patient (trajectory), it returns in years 
+if (!exists("CRN")) source("crn.R")   # CRN draw helpers (inert unless armed)
+
+# Given attributes of a patient (trajectory), it returns in years
 # how long till the patient would die a secular death.
 #
 # This is a terrible mortality model, but is the reference
@@ -24,7 +26,7 @@ years_till_death <- function(inputs)
   rate <- inputs$r.HD
   if(state == 1) rate <- rate * inputs$hr.S1D # Deal with Sick1 Hazard Ratio
   if(state == 2) rate <- rate * inputs$hr.S2D
-  rexp(1, rate)
+  draw_exp("death", rate)
 }
 
 # Given a trajectory, modify as needed when a secular

@@ -13,12 +13,14 @@
 #
 ###############################################################################
 
+if (!exists("CRN")) source("crn.R")   # CRN draw helpers (inert unless armed)
+
 years_till_sick2 <- function(inputs)
 {
-  state <- get_attribute(env, "State") 
+  state <- get_attribute(env, "State")
   if(state == 1) # 1 => Sick1
   {
-    rexp(1,inputs$r.S1S2)
+    draw_exp("sick2", inputs$r.S1S2)
   } else
   {
     inputs$horizon+1 # Past end of simulation time

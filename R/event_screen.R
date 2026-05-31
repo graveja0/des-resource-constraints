@@ -22,13 +22,17 @@
 # before treatment is applied.
 ###############################################################################
 
+if (!exists("CRN")) source("crn.R")   # CRN draw helpers (inert unless armed)
+
 years_till_screen <- function(inputs)
 {
   # After firing, "Screened" is set to 1 and this returns horizon+1 so
   # the main_loop's post-event reschedule pushes the event past the horizon.
+  # The per-patient screen time "tScreen" is drawn once at initialisation
+  # (staggered over the rollout window), so the queue never sees a burst.
   screened <- get_attribute(env, "Screened")
   if (!is.na(screened) && screened == 1) return(inputs$horizon + 1)
-  max(0, inputs$t.screen - now(env))
+  max(0, get_attribute(env, "tScreen") - now(env))
 }
 
 screen <- function(traj, inputs)
@@ -37,19 +41,25 @@ screen <- function(traj, inputs)
   set_attribute("Screened", 1) |>    # guard: prevent re-firing at same time
   branch(
     function() {
-      if (inputs$strategy == 'noscreen') return(1L)   # no program — skip all
-
       state <- get_attribute(env, "State")
-      if (state >= 2) return(1L)   # S2 or dead — no screen benefit
 
       strat <- inputs$strategy
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
 
-      if (state == 1L && runif(1) < cov * sens)       return(2L)  # true positive
-      if (state == 0L && runif(1) < cov * (1 - spec)) return(3L)  # false positive
-      return(1L)                                                    # not screened positive
+      # Draw BOTH uniforms for every alive patient FIRST, regardless of state or
+      # strategy, so the per-patient "screen" stream advances identically across
+      # arms (common random numbers). Only the threshold below differs by arm.
+      u_tp <- draw_unif("screen")   # true-positive check  (state = 1)
+      u_fp <- draw_unif("screen")   # false-positive check (state = 0)
+
+      if (state >= 2)            return(1L)   # S2 or dead — no screen benefit
+      if (strat == 'noscreen')   return(1L)   # draws consumed, no program
+
+      if (state == 1L && u_tp < cov * sens)       return(2L)  # true positive
+      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)  # false positive
+      return(1L)
     },
     continue = rep(TRUE, 3),
 

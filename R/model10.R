@@ -33,6 +33,7 @@ library(simmer)
 source('discount.R')
 source('inputs2.R')
 source('main_loop.R')
+source('crn.R')        # per-patient common-random-number banks
 
 source('event_death3.R')
 source('event_sick1.R')
@@ -58,18 +59,18 @@ screen <- function(traj, inputs)
   set_attribute("Screened", 1) |>
   branch(
     function() {
-      if (inputs$strategy == 'noscreen') return(1L)
-
       state <- get_attribute(env, "State")
-      if (state >= 2) return(1L)
 
       strat <- inputs$strategy
       cov  <- if (strat == 'mol') inputs$cov.mol   else inputs$cov.field
       sens <- if (strat == 'mol') inputs$sens.mol  else inputs$sens.field
       spec <- if (strat == 'mol') inputs$spec.mol  else inputs$spec.field
+      u_tp <- draw_unif("screen"); u_fp <- draw_unif("screen")   # CRN
+      if (state >= 2)          return(1L)
+      if (strat == 'noscreen') return(1L)
 
-      if (state == 1L && runif(1) < cov * sens)       return(2L)
-      if (state == 0L && runif(1) < cov * (1 - spec)) return(3L)
+      if (state == 1L && u_tp < cov * sens)       return(2L)
+      if (state == 0L && u_fp < cov * (1 - spec)) return(3L)
       return(1L)
     },
     continue = rep(TRUE, 3),
@@ -115,10 +116,10 @@ years_till_confirm <- function(inputs)
   mu   <- inputs$mu.confirm
 
   if (free >= pos) {
-    rexp(1, rate = inputs$rate_admit_free)          # slot available now
+    draw_exp("confirm", inputs$rate_admit_free)      # slot available now
   } else {
     n_ahead <- pos - free                            # patients ahead in queue
-    rexp(1, rate = cap * mu / n_ahead)               # M/M/c-flavoured wait
+    draw_exp("confirm", cap * mu / n_ahead)          # M/M/c-flavoured wait
   }
 }
 
@@ -162,7 +163,7 @@ get_confirm <- function(traj, inputs)
 years_till_release_confirm <- function(inputs)
 {
   if (get_attribute(env, "HasConfirm") != 1) return(inputs$horizon + 1)
-  rexp(1, inputs$mu.confirm)
+  draw_exp("trtdur", inputs$mu.confirm)
 }
 
 release_confirm <- function(traj, inputs)
@@ -209,7 +210,7 @@ years_till_sick2 <- function(inputs)
 {
   if (get_attribute(env, "State") != 1) return(inputs$horizon + 1)
   hr <- if (isTRUE(get_attribute(env, "TreatA") == 1L)) inputs$hr.TrtS1S2 else 1.0
-  rexp(1, inputs$r.S1S2 * hr)
+  draw_exp("sick2", inputs$r.S1S2 * hr)
 }
 
 # ---------------------------------------------------------------------------
@@ -222,8 +223,11 @@ counters <- c(
 initialize_patient <- function(traj, inputs)
 {
   traj                   |>
+  set_attribute("crnInit", function() { crn_init(get_name(env)); 0 }) |>
   seize("time_in_model") |>
-  set_attribute("AgeInitial",      function() sample(20:30, 1)) |>
+  set_attribute("AgeInitial",      function() 20 + floor(draw_unif("age") * 11)) |>
+  set_attribute("tScreen", function() inputs$t.screen.start +
+    (inputs$t.screen.end - inputs$t.screen.start) * draw_unif("screen_time")) |>
   set_attribute("State",           0) |>
   set_attribute("TreatA",          0) |>
   set_attribute("WaitingConfirm",  0) |>
@@ -402,8 +406,10 @@ add_attr_costs <- function(arrivals, inputs)
   arrivals
 }
 
-des_run <- function(inputs)
+des_run <- function(inputs, seed = 12345L)
 {
+  crn_reset(seed)         # arm per-patient CRN banks for this run
+  set.seed(seed)
   reset_waitlist()
   env  <<- simmer("SickSicker")
   traj <- des(env, inputs)
@@ -422,16 +428,15 @@ des_run <- function(inputs)
 
 # ---------------------------------------------------------------------------
 # Experiment: molecular vs field with endogenous confirmation queue
+# Both arms share the SAME seed -> identical per-patient CRN banks (CRN).
 # ---------------------------------------------------------------------------
 summarise_run <- function(r) {
   n <- length(unique(r$name))
   data.frame(dcost = sum(r$dcost) / n, dqaly = sum(r$dqaly) / n)
 }
 
-set.seed(42)
-run_mol   <- des_run(modifyList(inputs, list(N = 200, strategy = 'mol')))
-set.seed(42)
-run_field <- des_run(modifyList(inputs, list(N = 200, strategy = 'field')))
+run_mol   <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),   seed = 42L)
+run_field <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'field')), seed = 42L)
 
 res_mol   <- summarise_run(run_mol)
 res_field <- summarise_run(run_field)
