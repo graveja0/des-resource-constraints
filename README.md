@@ -1,102 +1,96 @@
-# resource-contention
+# DES for CEA with Resource Contention
 
-A **self-contained** Quarto project that builds an incremental, fully-executable explainer:
-*Discrete-Event Simulation for Cost-Effectiveness Analysis with Resource Contention.* It walks
-the Sick-Sicker model from `model-1` up to two correct contention designs (**A** and **B**) and
-compares their tradeoffs.
+This repository builds teaching material on **discrete-event simulation (DES) for
+cost-effectiveness analysis (CEA) with resource contention / capacity constraints**, around the
+Sick-Sicker model. There are two deliverables plus an archived precursor, all drawing on a single
+shared simulation engine.
 
-Everything needed to render lives in this directory — it can be lifted out into its own project
-without changes (the `.Rproj` anchors `here()` here; all `source()` paths are relative).
+- **`manuscript/`** — the tutorial: *Discrete-Event Simulation for Cost-Effectiveness Analysis with
+  Resource Contention.* Walks the Sick-Sicker model from `model-1` up to two correct contention
+  designs (**Approach A** and **Approach B**) and compares their tradeoffs. Renders to HTML + PDF.
+- **`slides/`** — a revealjs talk built **from** the manuscript, reusing the same engine and figures.
+- **`workshop-2025/`** — archived materials from the July 2025 University of Oxford HERC workshop
+  (a self-contained Quarto website, the precursor to the manuscript). Kept as a known-good snapshot.
 
 ## Layout
 
 ```
-resource-contention/
-├── resource-contention.qmd     the explainer (renders to HTML + PDF)
-├── _quarto.yml                 dual-format config; execute.freeze: auto
-├── resource-contention.Rproj   project anchor (makes here() root here; move-ready)
-├── references.bib
-├── methodology.md              the A/B methods + verified simmer semantics (design doc)
-├── PLAN.md                     section-by-section build plan for the .qmd
+des-resource-constraints/
+├── _quarto.yml                  project config: execute-dir: project; renders manuscript/ + slides/
+├── des-resource-constraints.Rproj   anchors here() at the repo root
+├── references.bib               single shared bibliography
 │
-├── main_loop.R                 the hand-rolled next-event engine (black box; unchanged)
-├── inputs.R  inputs2.R         parameter sheets
-├── discount.R                  continuous-time discounting helper
-├── cea-table-functions.R       ICER / CEA-table helpers
-├── event_*.R                   one transition per file (death, sick1, healthy, sick2, …)
-├── model-1.R … model-9.R       the natural-history + naive-contention progression (one idea each)
-├── model10.R                   endogenous-wait registry event (seed of Approach A)
-├── model11.R  model12.R        cautionary traps (global-signal renege; clone/synchronize) — shown eval:false
-├── become-sick-cloned.R        model12 helper
+├── R/                           ── single source of truth for all code ──
+│   ├── main_loop.R              the hand-rolled next-event engine (black box; unchanged)
+│   ├── inputs.R  inputs2.R      parameter sheets
+│   ├── discount.R               continuous-time discounting helper
+│   ├── cea-table-functions.R    ICER / CEA-table helpers
+│   ├── event_*.R                one transition per file (death, sick1, healthy, sick2, …)
+│   ├── model-1.R … model-9.R    natural-history + naive-contention progression (one idea each)
+│   ├── model10.R                endogenous-wait registry event (seed of Approach A)
+│   ├── model11.R  model12.R     cautionary traps (shown eval:false in the manuscript)
+│   ├── model-A.R  model-B.R     the two correct contention designs (validated)
+│   └── become-sick-cloned.R     model12 helper
 │
-├── drafts/                     validated A/B probe code (NOT yet on the CEA spine — Phase 0 seed)
-│   ├── probe-A-endogenous-wait.R
-│   └── probe-B-claim-ticket.R
-└── figures/                    Petri-net, car-race, model-diagram, etc.
+├── figures/                     shared static figure assets (Petri nets, car-race, diagrams)
+├── manuscript/                  the tutorial: resource-contention.qmd + _metadata.yml + _freeze/
+├── slides/                      the revealjs talk: resource-contention-slides.qmd + _metadata.yml
+├── workshop-2025/               archived Oxford HERC workshop (its own self-contained Quarto project)
+├── design/                      working/design docs (NOT deliverables): methodology.md, PLAN.md
+└── validation/                  harnesses that reproduce the manuscript's numbers (val-harness-*, probes)
 ```
+
+### How paths resolve (important)
+
+The repo root is a single Quarto project. `_quarto.yml` sets `execute-dir: project`, so **every chunk
+runs with the working directory at the repo root**. Deliverables in `manuscript/` and `slides/` use a
+`_metadata.yml` (not a `_quarto.yml`) for their format overrides — a `_metadata.yml` is *not* a `here()`
+project-root marker, so `here::here()` still resolves to the repo root.
+
+- The model files in `R/` are sourced as `source(here::here("R/model-N.R"), chdir = TRUE)`. The
+  `chdir = TRUE` matters: each `model-N.R` does its own bare `source('inputs.R')`, which resolves
+  against `R/` only while the working directory is temporarily `R/`.
+- Markdown image paths in `manuscript/` use `../figures/…` (relative to the document).
 
 ## Render
 
 ```bash
-cd resource-contention
-quarto render resource-contention.qmd            # both formats
-quarto render resource-contention.qmd --to html  # fast iteration
-quarto render resource-contention.qmd --to pdf    # uses system LaTeX (TeX Live found at /Library/TeX/texbin)
+# the whole project (manuscript + slides):
+quarto render
+
+# a single deliverable / fast iteration:
+quarto render manuscript/resource-contention.qmd --to html
+quarto render manuscript/resource-contention.qmd --to pdf   # system LaTeX (TeX Live at /Library/TeX/texbin)
+quarto render slides/resource-contention-slides.qmd
+
+# the archived workshop (its own project):
+cd workshop-2025 && quarto render
 ```
 
-PDF works with the existing system LaTeX — no `tinytex` install needed. On a LaTeX-less machine:
-`quarto install tinytex` once.
+PDF works with system LaTeX — no `tinytex` needed (on a LaTeX-less machine: `quarto install tinytex` once).
 
-## ⚠️ Freeze gotcha (read this)
+## ⚠️ The freeze gotcha (read before editing any `R/*.R` file)
 
-`execute.freeze: auto` re-runs a chunk only when the **`.qmd` text** changes — it does **not** notice
-edits to the `source()`d `.R` files. There is **no `--no-freeze` flag**; after editing any `model-*.R`,
-`inputs.R`, etc., clear the cache first so the chunks re-execute:
+`execute.freeze` re-runs a chunk only when the **`.qmd` text** changes — it does **not** notice edits to
+the `source()`d files in `R/`. There is **no `--no-freeze` flag**. After editing any `R/model-*.R`,
+`R/inputs.R`, `R/main_loop.R`, etc., clear the cache so chunks re-execute:
 
 ```bash
-rm -rf _freeze && quarto render resource-contention.qmd
+# this is a Quarto project, so the freeze cache lives at the repo-root _freeze/
+rm -rf _freeze && quarto render manuscript/resource-contention.qmd
 ```
 
-Keep `set.seed()` in every stochastic chunk so frozen output is reproducible. Commit `_freeze/`.
+Keep `set.seed()` in every stochastic chunk so frozen output is reproducible. **Commit `_freeze/`.**
+Rendered `.html`/`.pdf`/`_files/` are gitignored (regenerate from source); `_freeze/` is the committed
+reproducibility artifact.
 
-## Status
+## The modeling substrate (one-paragraph orientation)
 
-- ✅ Self-contained: all engine/event/costing/model code copied here and verified to run from this dir.
-- ✅ **Parts I–II backfilled:** Orientation + Models 1–8 (each = one idea, source-and-run + commented
-  `eval:false` deltas + the random-audit idiom) + Model 8 "freeze trap" fulcrum (death rate falls 6.3 → 3.2
-  under constraint, p < 0.001) + the "gallery of traps" (model11/12, C, D — `eval:false`, each naming the
-  invariant it violates). 30 executable chunks; renders clean to **HTML (463 KB) + PDF (911 KB)**.
-- ✅ **Phase 0 done:** `model-A.R` (endogenous-wait, ~750 LOC) and `model-B.R` (claim-ticket companion,
-  ~740 LOC) built on the `model10` CEA spine and **independently verified** — capacity enforced exactly
-  (max concurrent == c), zero leaks (seize == release, server → 0), contention genuinely endogenous (wait
-  rises as c↓ / N↑; ablation confirms), competing risks race during the wait, CEA accounting conserved
-  (no sick1+treatment double-count), null-effect regression flat across c. **Headline result holds: A and B
-  agree on mean CEA endpoints (deaths, S2-time, dQALY, dcost) within Monte-Carlo noise**, differing only by
-  construction on the wait distribution (B exact FIFO, A analytic) and treated count.
-  - *Costing fix made vs `model10`:* `qaly_arrivals()` now keys utilities on the order-independent
-    `*_active` booleans instead of the exact `active_resources` string (`'sick1, A'`), which silently
-    dropped to zero utility when real contention reordered the seizes. (Caught by the null-effect test.)
-  - *Run guards:* `model-A.R` skips its experiment block when `MODEL_A_NORUN=1`; `model-B.R` skips it under
-    `source()` automatically (`sys.nframe()` guard). So both can be `source()`d into the `.qmd` cheaply.
-  - *Perf caveat:* `model10`'s per-patient `split_arrivals()` costing is the bottleneck (~minutes at
-    N=1000, 10 seeds). Use modest N in the doc + freeze.
-- ✅ **Parts III–IV + Appendix done — first full draft complete.** Approach A (endogenous-wait, fire-time
-  guard) and Approach B (claim-ticket companion) mechanism walkthroughs with live demos; the A-vs-B
-  head-to-head (static verified agreement table + a small live reproduction + the tradeoff table); the
-  7-rung validation ladder; the LMIC "choosing an approach" guidance; and the `simmer`-semantics appendix.
-  **~48 executable chunks; renders clean to HTML (799 KB) + PDF (1.12 MB)** in ~5 min (freeze caches it).
-  `drafts/val-harness-{A,B}.R` reproduce the N=1000/10-seed numbers.
-- ✅ **CEA / ICER table added (Part IV, after the head-to-head).** Four strategies — No-treatment ·
-  Infinite · Constrained-A · Constrained-B — with discounted cost/QALYs, incrementals (± SE), and ICERs,
-  reproduced by `drafts/cea-icer-harness.R`. Infinite capacity is *dominant* (cost-saving + 3 QALYs); the
-  constraint forfeits nearly all of that value; A and B agree within Monte-Carlo noise (both constrained
-  increments are within ~1 SE of zero, so those ICERs are noise-dominated — the robust signals are the gulf
-  vs infinite capacity and the A≈B agreement).
-- ✅ **`model-A.R` / `model-B.R` library hygiene fixed.** Both now load `simmer` last and force it above
-  `lubridate` on the search path (detach + reattach), so `simmer::now()` is never masked and both are robust
-  standalone; the `.qmd`'s re-attach workaround was removed.
-- ⏳ **Open polish items (none blocking):** migrate `cea-table-functions.R` to `kableExtra`/`gt`; pre-render
-  bespoke A/B mechanism diagrams to `.svg`+`.pdf`; raise demo N once render budget allows.
-
-Tables: migrate `cea-table-functions.R` output to `kableExtra`/`gt` (via `dampack::calculate_icers(...,
-return_data = TRUE)`) for faithful PDF — `flextable` styling is only partially faithful in PDF.
+`main_loop.R` is a hand-rolled next-event competing-risks engine; in it, `simmer` is only a
+timeout/tally engine and the "resources" are `capacity = Inf` accounting tallies. A *genuinely finite*
+resource forces `simmer`'s native blocking `seize()`, which freezes a queued patient's event clock —
+the **freeze trap** (Model 8). The shared invariant any correct fix must honor: *the patient must never
+block; disease must keep progressing during the wait; capacity `c` must be enforced exactly; no leaks.*
+**Approach A** honors it with an endogenous-wait registry event (analytic wait, engine untouched);
+**Approach B** with a claim-ticket companion (exact FIFO queue). See `design/methodology.md` for the
+verified methods and simmer semantics, and `design/PLAN.md` for the section-by-section build plan.

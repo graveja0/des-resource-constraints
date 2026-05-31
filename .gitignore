@@ -4,3 +4,15 @@
 .httr-oauth
 .DS_Store
 .quarto
+.positai
+
+/.quarto/
+**/*.quarto_ipynb
+
+# Rendered Quarto outputs — keep _freeze/ committed, gitignore the built artifacts.
+**/*_files/
+**/_site/
+manuscript/*.html
+manuscript/*.pdf
+slides/*.html
+slides/*.pdf

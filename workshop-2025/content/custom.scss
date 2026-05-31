@@ -1,0 +1,179 @@
+/*====================================
+  QUARTO PRESENTATION THEME - VANDERBILT
+  ====================================*/
+
+/*-- scss:defaults --*/
+
+/*====================================
+  COLOR PALETTE
+  ====================================*/
+// Vanderbilt brand colors - https://brand.vanderbilt.edu/color/
+$theme-blue: #1D627B; 
+$theme-black: #1C1C1C;
+$theme-gold: #CFAE70; 
+$theme-medgrey: #4d5259; 
+$theme-lightgrey: #ebecec; 
+$theme-white: #FFFFFF; 
+
+// Apply colors to presentation elements
+$body-bg: $theme-white;
+$body-color: $theme-black;
+$link-color: $theme-gold;
+$presentation-heading-color: $theme-black; 
+
+/*====================================
+  FONT DEFINITIONS & IMPORTS
+  ====================================*/
+// Import Google Fonts
+@import url('https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap');
+
+// Define custom font variables
+$cengoth: 'Century Gothic Bold';
+$libre: 'Libre Caslon Text';
+$roboto: 'Roboto';
+$apex: 'Apex';
+$helvetica: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+
+// Load Century Gothic Bold from local file
+@font-face {
+  font-family: 'Century Gothic Bold';
+  src: url('fonts/CenturyGothic-Bold.otf') format('opentype');
+}
+
+// Load Apex font from local file
+@font-face {
+  font-family: $apex;
+  src: url('fonts/apex/Apex New Book.otf') format('opentype');
+}
+
+// Load Adobe Garamond Pro for special styling (quotes)
+@font-face {
+  font-family: 'Adobe Garamond Pro';
+  src: local('Adobe Garamond Pro Bold Italic');
+  font-weight: bold;
+  font-style: italic;
+}
+
+/*====================================
+  FONT ASSIGNMENTS
+  ====================================*/
+// Set main body font to Roboto
+body {
+  font-family: $roboto, sans-serif;
+}
+
+// Set heading font to Helvetica Neue instead of Apex
+$presentation-heading-font: $helvetica;
+
+/*====================================
+  TITLE AND HEADING STYLES
+  ====================================*/
+// Main presentation title (title slide) - reduced by 30%
+// Multiple selectors to ensure we catch the title slide
+.reveal .title-slide h1,
+#title-slide .title,
+.reveal .title-slide .title {
+  font-family: $helvetica !important; /* Force Helvetica Neue */
+  font-size: 1.75em !important; /* 30% smaller than typical 2.5em default */
+  letter-spacing: -0.05em; /* Slightly tighter letter spacing */
+}
+
+// All slide titles (h2-h6) - made larger than body text
+.reveal .slides section h2,
+.reveal .slides section h3,
+.reveal .slides section h4,
+.reveal .slides section h5,
+.reveal .slides section h6 {
+  font-family: $helvetica !important; /* Force Helvetica Neue */
+  letter-spacing: -0.05em; /* Slightly tighter letter spacing */
+  font-size: 1.3em; /* Made larger - 30% bigger than default */
+}
+
+// Special styling for block quotes using Adobe Garamond
+.reveal blockquote {
+  font-family: 'Adobe Garamond Pro', serif;
+  font-weight: bold;
+  font-style: italic;
+}
+
+/*-- scss:rules --*/
+
+/*====================================
+  CUSTOM CONTENT BOXES
+  ====================================*/
+// Question box styling with blue accent
+.reveal .slide .question {
+  border-left: 3px solid #7090A5; /* Blue left border */
+  padding-left: 0.5em;
+  padding-top: 0.25em;
+  padding-bottom: 0.25em;
+  background: #A9BCC9; /* Light blue background */
+}
+
+// Poll box styling with drop shadow effect
+.reveal .slide .poll {
+  padding-left: 0.7em;
+  padding-top: 0.25em;
+  padding-bottom: 0.25em;
+  background: $theme-white;
+  filter: drop-shadow(0 0 0.75rem $theme-blue); /* Blue glow effect */
+}
+
+/*====================================
+  LOGO POSITIONING
+  ====================================*/
+// Fixed logo in bottom-right corner of slides
+.reveal .slide-logo {
+  display: block;
+  position: fixed;
+  top: unset !important;
+  left: unset !important;
+  bottom: 5px; /* 5px from bottom */
+  right: 50px; /* 50px from right edge */
+  height: 35px !important;
+  width: 35x !important; /* Fixed typo: was 35x */
+  max-width: unset !important;
+  max-height: unset !important;
+}
+
+/*====================================
+  UTILITY CLASSES
+  ====================================*/
+// Color utility classes for emphasizing text
+.gold {
+  color: $theme-gold;
+  font-weight: bold;
+}
+
+.blue {
+  color: $theme-blue;
+  font-weight: bold;
+}
+
+.white {
+  color: $theme-white;
+  font-weight: bold;
+}
+
+// Monospace font utility
+.mono {
+  font-family: monospace;
+  font-size: 0.9em; /* Slightly smaller than normal text */
+}
+
+/*====================================
+  INTERACTIVE ELEMENTS
+  ====================================*/
+// Ensure all links are underlined for accessibility
+.reveal .slide a {
+  text-decoration: underline;
+}
+
+// Fragment animation styling for progressive reveals
+.highlight-last {
+  color: grey; /* Dim non-current fragments */
+  .current-fragment {
+    color: $theme-blue; /* Highlight current fragment in blue */
+  }
+}

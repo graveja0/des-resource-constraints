@@ -1,0 +1,375 @@
+/* =================================================================
+   GOOGLE FONTS IMPORTS
+   ================================================================= */
+
+/* Import multiple Google Fonts for different typography needs */
+@import url("https://fonts.googleapis.com/css2?family=Rubik+Dirt&family=Barlow+Condensed:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Oswald:wght@200..700&family=Fira+Sans:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Roboto+Slab:wght@100..900&display=swap");
+
+/* Additional serif fonts for elegant typography */
+@import url("https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400;1,600;1,700&family=Rubik+Dirt&family=Barlow+Condensed:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Oswald:wght@200..700&family=Fira+Sans:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Roboto+Slab:wght@100..900&display=swap");
+
+/* More serif fonts including Cormorant Garamond and Playfair Display */
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Barlow+Condensed:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Oswald:wght@200..700&family=Roboto+Slab:wght@100..900&display=swap");
+
+/* =================================================================
+   CSS CUSTOM PROPERTIES (VARIABLES)
+   ================================================================= */
+
+:root {
+  /* Set the color for Mermaid diagram edges to black */
+  --mermaid-edge-color: black;
+}
+
+/* =================================================================
+   GLOBAL BACKGROUND STYLES
+   ================================================================= */
+
+/* Force white background on main layout elements */
+body, section, header, main, .quarto-layout-panel, .quarto-layout-row, .quarto-layout-cell {
+  background-color: white !important;
+}
+
+html {
+  background-color: white !important;
+}
+
+/* =================================================================
+   MAIN DOCUMENT CONTENT STYLING
+   ================================================================= */
+
+/* Main content container - uses Roboto Slab as primary font */
+#quarto-document-content {
+  font-family: "Roboto Slab", Georgia, "Times New Roman", Times, serif;
+  font-size: 18pt;
+  margin-bottom: 20vh;  /* Large bottom margin for spacing */
+  padding-bottom: 10vh; /* Additional bottom padding */
+  z-index: 1;          /* Ensure content appears above background elements */
+}
+
+/* Main headings (H1) styling */
+#quarto-document-content h1 {
+  font-family: "Roboto Slab", "Cormorant Garamond", "Times New Roman", Times, serif;
+  font-weight: 500;
+  font-size: 2.8em;    /* Large, prominent headings */
+  line-height: 1;      /* Tight line height for impact */
+}
+
+/* =================================================================
+   CLOSEREAD SECTION STYLES
+   ================================================================= */
+
+/* Base closeread section - transparent background */
+.cr-section {
+  background-color: white !important;
+}
+.cr-section.sidebar-left,
+.cr-section.sidebar-right,
+.cr-section.overlay-left,
+.cr-section.overlay-right,
+.cr-section.overlay-center,
+.cr-section.focus {
+  background-color: white !important;
+}
+
+
+.cr-section .sticky-col {
+  background-color: white !important;
+  padding-left: 30px;
+  padding-right: 30px;
+}
+
+/* Narrative columns should be white (except where specifically overridden for overlays) */
+.cr-section .narrative-col {
+  background-color: white !important;
+}
+
+/* Override the narrative column background only for overlay-center where we want transparency */
+.cr-section.overlay-center .narrative-col {
+  background-color: transparent !important;
+}
+
+/* =================================================================
+   SIDEBAR-LEFT LAYOUT
+   ================================================================= */
+
+/* Sticky column in sidebar-left layout */
+.cr-section.sidebar-left .sticky-col {
+  padding-left: 30px;
+  padding-right: 30px;
+}
+
+/* Narrative column (text content) in sidebar-left layout */
+.cr-section.sidebar-left .narrative-col {
+  background-color: transparent;
+  font-family: "Fira Sans";    /* Clean sans-serif for readability */
+  min-width: 40svw;            /* 40% of viewport width minimum */
+  padding-left: 80px;          /* Large left padding for text offset */
+}
+
+/* First block in sidebar-left gets special top padding for positioning */
+.cr-section.cr-section.sidebar-left .narrative-col > *:first-child {
+  padding-block-start: 40svh;  /* Start 40% down the viewport */
+}
+
+/* =================================================================
+   OVERLAY-CENTER LAYOUT
+   ================================================================= */
+
+/* Narrative text in overlay-center layout - appears as overlay on content */
+.cr-section.overlay-center .narrative-col .narrative {
+  background-color: rgba(0, 0, 0, 0.85);  /* Semi-transparent black background */
+  color: rgb(255, 255, 255);               /* White text for contrast */
+  font-family: "Crimson Text";             /* Elegant serif font */
+  font-size: 1.5rem;
+  text-align: center;
+  min-width: 50svw;                        /* 50% of viewport width minimum */
+  position: absolute;                      /* Positioned absolutely for overlay */
+  left: 50%;
+  transform: translate(-50%, -50%);        /* Center horizontally and vertically */
+}
+
+/* First block in overlay-center starts at middle of viewport */
+.cr-section.overlay-center .narrative-col > *:first-child {
+  padding-block-start: 50svh;  /* Start at 50% viewport height */
+}
+
+/* Remove default padding from trigger elements */
+.cr-section.overlay-center .narrative-col .trigger .narrative {
+  padding: 0em;
+}
+
+/* Paragraphs within overlay narratives get minimal padding */
+.cr-section.overlay-center .narrative-col .trigger .narrative p {
+  padding: 1% !important;
+}
+
+/* =================================================================
+   FIXED INFO SECTION (FOOTER-LIKE)
+   ================================================================= */
+
+/* Fixed information panel at bottom of page */
+#info {
+  background-color: white !important;
+  position: fixed;          /* Stays in place during scroll */
+  z-index: -1;             /* Behind other content */
+  width: 100%;
+  height: 40vh;            /* 40% of viewport height */
+  bottom: 0;               /* Anchored to bottom */
+}
+
+/* Text styling within the info section */
+#info p {
+  text-align: center;
+  font-family: 'Oswald';   /* Condensed sans-serif font */
+  font-weight: 100;        /* Very light weight */
+  font-size: 1.1rem;
+  margin: 0;
+  position: relative;
+  display: flexbox;
+  top: 20%;                /* Position 20% from top of info section */
+  left: 50%;
+  transform: translate(-50%, -50%);  /* Center the text */
+}
+
+/* =================================================================
+   HIGHLIGHT STYLES
+   ================================================================= */
+
+/* Base highlight style - white text with colored backgrounds */
+.hl {
+  color: white;
+  font-weight: 400;
+  padding: 0.05rem 0.25rem;  /* Small padding around highlighted text */
+  line-height: 1.8;          /* Generous line height for readability */
+}
+
+/* Color variants for different types of highlights */
+.hl-blue { background-color: cornflowerblue; }
+.hl-red { background-color: firebrick; }
+.hl-cyan { background-color: darkcyan; }
+.hl-green { background-color: darkolivegreen }
+.hl-brown { background-color: peru }
+
+/* =================================================================
+   TABLE STYLES
+   ================================================================= */
+
+/* Classic table styling with prominent borders */
+.tbl-classic th {
+  border-top: 5px solid #000 !important;    /* Thick top border on headers */
+}
+
+.tbl-classic tbody {
+  border-top: 2px solid #000 !important;    /* Medium border above body */
+  border-bottom: 5px solid #000 !important; /* Thick bottom border */
+}
+
+/* Smaller font size for compact tables */
+.tbl-smaller th, td, tr, tbody {
+  font-size: 1rem !important;
+}
+
+/* Very small tables with specific font */
+.tbl-tip th, td, tr, tbody {
+  font-size: 0.8rem !important;
+  font-family: "Roboto Slab";
+}
+
+/* Table notes styling */
+.tbl-note {
+  font-size: 0.85rem;
+  font-weight: 100;    /* Light weight for subtle appearance */
+}
+
+/* =================================================================
+   ICON LIST STYLES
+   ================================================================= */
+
+/* Custom list styling for icon lists */
+.iconlist ul {
+  list-style: none;           /* Remove default bullets */
+  text-indent: -1.4rem;       /* Negative indent for hanging indent effect */
+  padding-left: 5rem;         /* Large left padding to accommodate icons */
+}
+
+/* =================================================================
+   LABEL STYLES
+   ================================================================= */
+
+/* Label styling (likely for form elements or callouts) */
+.lflabel {
+  font-family: "Barlow Condensed";  /* Condensed font for compact labels */
+  font-size: 0.9rem !important;
+}
+
+/* =================================================================
+   MOBILE RESPONSIVE STYLES
+   ================================================================= */
+
+/* Mobile styles for screens smaller than 576px (Bootstrap xs breakpoint) */
+@media (max-width: 576px) {
+  
+  /* Smaller headings on mobile */
+  #quarto-document-content h1 {
+    font-size: 2.5em;
+    line-height: 1;
+  }
+
+  /* All narrative columns become transparent on mobile */
+  .cr-section.sidebar-left .narrative-col,
+  .cr-section.sidebar-right .narrative-col,
+  .cr-section.overlay-left .narrative-col,
+  .cr-section.overlay-right .narrative-col,
+  .cr-section.overlay-center .narrative-col {
+    background-color: transparent;
+    font-family: "Fira Sans";    /* Clean sans-serif for readability */
+    font-size: 2.2rem;           /* ADD THIS LINE - 20% larger than default */
+    min-width: 40svw;            /* 40% of viewport width minimum */
+    padding-left: 80px;          /* Large left padding for text offset */
+  }
+
+  /* Mobile narrative styling - all text becomes overlay-style */
+  .cr-section.sidebar-left .narrative-col .narrative > *,
+  .cr-section.sidebar-right .narrative-col .narrative > *,
+  .cr-section.overlay-left .narrative-col .narrative > *,
+  .cr-section.overlay-right .narrative-col .narrative > *,
+  .cr-section.overlay-center .narrative-col .narrative > * {
+    background-color: rgba(255, 255, 255, .9);  /* Semi-transparent white */
+    padding: 5px;
+    color: black;
+    font-family: "Barlow Condensed";             /* Condensed font for mobile */
+    font-weight: 200;
+    font-size: 2rem;
+    text-align: center;
+    min-width: 50svw;
+    position: absolute;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  /* Remove padding from trigger narratives on mobile */
+  .cr-section .narrative-col .trigger .narrative {
+    padding: 0em;
+  }
+
+  /* Smaller info section text on mobile */
+  #info p {
+    font-size: 0.8rem;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  
+  /* Even smaller table text on mobile */
+  .tbl-smaller th, td, tr, tbody {
+    font-size: 0.7rem !important;
+  }
+
+  /* Smaller table notes on mobile */
+  .tbl-note {
+    font-size: 0.7rem;
+  }
+}
+
+/* Target any other Quarto-specific containers that might have grey backgrounds */
+.quarto-container,
+.content-visible,
+.page-layout-article,
+.quarto-title-banner,
+div[data-bs-target] {
+  background-color: white !important;
+}
+
+/* Ensure any grid or flex containers are also white */
+.grid, .d-flex, .container-fluid {
+  background-color: white !important;
+}
+
+/* FOR SLIDE-LIKE DOCUMENT */
+
+/* Make kable tables larger */
+.kable-table table,
+table {
+  font-size: 1.3rem !important;
+}
+
+.kable-table th,
+.kable-table td,
+table th,
+table td {
+  font-size: 1.3rem !important;
+  padding: 0.8rem !important;
+}
+
+/* Make sidebar-left narrative text much larger */
+.cr-section.sidebar-left .narrative-col .narrative p {
+  font-size: 2rem !important;
+  line-height: 1.4 !important;
+}
+
+/* =================================================================
+   SUMMARY OF KEY FEATURES:
+   
+   1. TYPOGRAPHY: Multiple Google Fonts for different content types
+      - Roboto Slab: Main content and headings
+      - Fira Sans: Sidebar narratives  
+      - Crimson Text: Overlay narratives
+      - Oswald: Info section
+      - Barlow Condensed: Labels and mobile text
+
+   2. LAYOUTS: Three main closeread layouts
+      - sidebar-left: Text alongside sticky visual content
+      - overlay-center: Text overlaid on visual content
+      - Mobile: All layouts become overlay-style
+
+   3. RESPONSIVE: Mobile-first approach with overlay styling
+      on small screens for better readability
+
+   4. VISUAL ELEMENTS: 
+      - Highlight colors for emphasis
+      - Table styling options
+      - Icon list formatting
+      - Fixed footer info section
+
+   5. SCROLLYTELLING: Specialized padding and positioning
+      for scroll-triggered narrative content
+   ================================================================= */
