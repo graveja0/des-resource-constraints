@@ -1,0 +1,22 @@
+# Directory-level format overrides for the manuscript deliverable.
+# NOT a _quarto.yml: a _metadata.yml is not a here()/project root marker, so here::here()
+# still resolves to the repo root (where _quarto.yml + .Rproj + .git live). Project-wide
+# execute/knitr/bibliography settings are inherited from ../_quarto.yml.
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-tools: true
+    df-print: paged
+    fig-format: svg
+    fig-width: 6
+    fig-height: 3.5
+  pdf:
+    toc: true
+    number-sections: true
+    documentclass: scrartcl
+    fig-pos: "H"
+    fig-format: pdf
+    fig-width: 6
+    fig-height: 3.5

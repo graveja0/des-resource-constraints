@@ -1,0 +1,29 @@
+project:
+  type: website
+  resources:
+    - "*.xlsx"
+    - "*.xlsm"
+    - "*.xls"
+    - "*.pptx"
+    - "*.pdf"
+    - "*.docx"
+    - "*.amua"
+    - "*.csv"
+    - "*.zip"
+
+website:
+  title: "Discrete Event Simulation for Health Economic Evaluation"
+  navbar:
+    search: false
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    
+execute:
+  freeze: true  # never re-render during project render    
+
+
+
+

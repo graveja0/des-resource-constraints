@@ -1154,439 +1154,199 @@ the queue itself — to make it **endogenous**. That is the finite resource Part
 promising, and it is where DES finally earns its keep.
 
 
-# Part III — Two designs that work
+# Part III — Two designs for the endogenous queue
 
-## Approach A — the endogenous-wait registry event
+Model 9 failed for a precise reason: its wait was *exogenous*, the same fixed
+distribution regardless of how many patients were in line. A real bottleneck is the
+opposite — *my* wait is a function of *everyone else's* demand, right now. To capture it
+we make the confirmatory step a **genuinely finite resource**: `n` confirmation slots
+(here ≈ 2 per 1,000 eligible people), each holding a patient for the length of a workup.
+When the field test floods it with referrals, the slots fill, a queue forms, and patients
+wait — while their disease keeps progressing.
 
-> **Objective:** build the first design that honours the shared invariant. Keep the patient inside the hand-rolled event loop for the entire wait, turn *"a treatment slot becomes available"* into one more registry event whose firing time is read from the live occupancy of a real capacity-`c` resource, and let a fire-time guard enforce the cap exactly — with no blocking `seize` of the patient anywhere. This is the robust production model: it reuses every piece of Model 7's costing and registry machinery and touches none of the `clone`/`synchronise`/`send`/`trap` fragility from the gallery.
+This is the moment Part I kept deferring, and it comes with a hard constraint. The
+hand-rolled engine resolves competing risks by sampling each event's time and taking the
+`argmin`. If we let a patient **block** in a `simmer` `seize()` — the obvious way to model
+a queue — the arrival stops dead in the queue, and with it the patient's whole event clock:
+they cannot die, progress, or recover while they wait. The two paradigms do not compose.
+So every correct design must honour one **invariant**:
 
-The lesson of Model 8 was that a blocking `seize` freezes the patient's clock, and the lesson of the gallery was that every patch which keeps the blocking `seize` and tries to escape it — signals, clones, folded reneges — breaks in some silent way. Approach A takes the opposite tack: **the patient never seizes the contended resource at all.** Instead of asking `simmer` to queue the patient, we ask it only what we already know how to ask — *how many slots are busy right now?* — and convert that occupancy into a waiting time that the patient experiences as just another competing risk.
+> The patient never blocks. Disease keeps racing during the wait. The capacity cap is
+> enforced exactly. No slot is leaked or double-released.
 
-Recall the one capability that the methodology note flagged as the way out: `get_server_count()`, `get_capacity()`, and friends are **callable mid-trajectory and inside a `time_to_event()` function**, and they read *live* occupancy. That single fact is the hinge of the whole design. It lets us write a registry event — `"Get Treatment A"` — whose sampled time is a function of how congested the resource is at the moment it is sampled. Because registry events are *reactive*, this time is re-drawn after every event the patient experiences, so the wait always reflects current congestion. The patient sits in the event loop the whole time, racing this wait against death, progression to S2, and recovery, exactly as the invariant demands.
+We give two designs that honour it. **Approach A** computes the wait analytically from live
+occupancy and never touches the engine. **Approach B** spawns a disposable companion that
+holds the *real* blocking queue on the patient's behalf. They are the convenient design and
+the faithful one, and Part IV shows where they agree and where they part.
 
-There are three moving parts, and it is worth naming them before reading the code:
+## Approach A — the endogenous-wait registry event (Model 10)
 
-1. A **real, finite resource** `A` with `capacity = c`. Crucially it is *not* in the infinite `counters` list — it is a genuine contended resource — but the patient trajectory never does a blocking `seize` of it. (`simmer` still monitors it, which is what makes the occupancy readable and the cost integral correct.)
-2. An **endogenous wait** (`years_till_treatmentA()`): the `time_to_event` for the availability event. It reads `get_server_count("A")` against `get_capacity("A")` and the patient's position in a global FIFO waitlist, and turns that into a draw. If a slot is (in expectation) free for me, I am admitted almost instantly; otherwise I draw an M/M/c-flavoured exponential whose mean is the time for the people ahead of me to finish.
-3. A **fire-time guard** (`get_treatmentA()`): when the availability event actually fires, it does the real `seize("A")` *only if a slot is genuinely free at that instant*; otherwise it skips and lets the reactive machinery re-defer. This is what makes the capacity cap exact — the wait formula only has to be approximately right, because the guard is the thing that actually enforces `c`.
-
-The Petri-net picture is the constrained ladder we have already drawn (@fig-petri-model6): the `A` place has a fixed token budget, but — and this is the whole point — the disease transitions out of S1 (to S2, to death, back to H) **never stop firing while the patient waits.** The token for a waiting patient is still live in the S1 place, still exposed to every competing transition. Nothing is parked.
+The cleanest idea first: leave the patient in the event loop and add **one more registry
+event** — "get confirmed" — whose `time_to_event` *reads the live queue* and returns how
+long this patient should expect to wait. Because registry events are reactive, the engine
+re-samples it after every transition, so the estimate always reflects current congestion.
+A real `add_resource("confirm", capacity = c)` holds the cap (it is **not** an `Inf`
+counter); a global FIFO waitlist records who is in line.
 
 ### The endogenous wait: reading live occupancy
 
-The first delta is the `time_to_event` for the availability event. It is gated so it only does anything while the patient is genuinely waiting in S1 and not already treated; then it reads occupancy and FIFO position and converts congestion into a draw.
-
-```{r}
-#| label: approach-A-delta-wait
-#| eval: false
-# From model-A.R — years_till_treatmentA(): the ENDOGENOUS wait.
+```r
+# THE DELTA (model10) — years_till_confirm(): the ENDOGENOUS wait.
 # Reactive => re-sampled after every event, so congestion is always current.
-years_till_treatmentA <- function(inputs) {
-  # eligible only while genuinely waiting in S1 and not already on treatment
-  if (get_attribute(env, "State")        != 1) return(inputs$horizon + 1)
-  if (get_attribute(env, "waitingForA")  != 1) return(inputs$horizon + 1)
-  if (get_attribute(env, "onTrt")        == 1) return(inputs$horizon + 1)
-
-  cap  <- get_capacity(env, "A")           # <- LIVE: the cap c
-  busy <- get_server_count(env, "A")       # <- LIVE: slots currently occupied
-  free <- cap - busy
-  pos  <- wl_position(get_name(env))       # 1 = front of the FIFO waitlist
-  if (is.na(pos)) pos <- 1
-  mu   <- inputs$mu_A                       # treatment service rate (per year)
-
-  if (free >= pos) {
-    # A slot is (in expectation) available for me now -> near-instant admit.
-    rexp(1, rate = inputs$rate_admit_when_free)
+years_till_confirm <- function(inputs) {
+  if (get_attribute(env, "WaitingConfirm") != 1) return(inputs$horizon + 1)  # not in line
+  cap  <- get_capacity(env, "confirm")
+  busy <- get_server_count(env, "confirm")        # slots occupied right now
+  pos  <- wl_position(get_name(env))              # my place in the FIFO line
+  if (cap - busy >= pos) {
+    draw_exp("confirm", inputs$rate_admit_free)   # a slot is (in expectation) free for me -> ~now
   } else {
-    # All slots busy; (pos - free) people block ahead of me. M/M/c-flavoured:
-    # departures at rate cap*mu; I wait for (pos - free) departures.
-    # Mean wait = (pos - free) / (cap * mu).
-    n_ahead <- pos - free
-    rexp(1, rate = (cap * mu) / n_ahead)
+    n_ahead <- pos - (cap - busy)
+    draw_exp("confirm", cap * inputs$mu.confirm / n_ahead)  # M/M/c-flavoured wait
   }
 }
 ```
-
-Two things make this *endogenous* rather than the exogenous, per-patient wait of Model 7. First, `get_server_count` is read live — my wait depends on how full the resource is *for everyone*, not on a number stamped on me at onset. Second, the FIFO position `pos` couples my wait to the demand ahead of me: the more patients waiting, the larger `n_ahead`, the longer my draw. Shrink `c` or raise `N` and both effects push the wait up. The waitlist itself lives in a plain R environment outside `simmer` (a patient joins on entering S1 and — load-bearing — *leaves it on every exit path*: recover, progress, die, horizon cleanup).
 
 ### The fire-time guard: enforcing the cap exactly
 
-The wait above is only an approximation of *when* a slot frees. What makes the capacity cap **exact** is the guard at fire time: the availability event seizes `A` only if a slot is provably free at that instant, and otherwise does nothing and waits to be re-sampled.
+The analytic wait says *when* a slot should free; it cannot guarantee one actually has. So
+when the event fires we **guard** it: seize `confirm` only if a slot is genuinely free, and
+otherwise do nothing — the reactive reschedule will try again. The cap is therefore
+enforced *exactly* by `simmer`'s own server count, while the patient never blocks.
 
-```{r}
-#| label: approach-A-delta-guard
-#| eval: false
-# From model-A.R — get_treatmentA(): the FIRE-TIME GUARD.
-# Seize "A" ONLY if a slot is genuinely free; else skip and let the reactive
-# reschedule re-defer. This enforces capacity = c EXACTLY, with no blocking.
-get_treatmentA <- function(traj, inputs) {
-  traj %>%
-    branch(
-      function() {
-        ok <- get_attribute(env, "State")       == 1 &&
-              get_attribute(env, "waitingForA")  == 1 &&
-              get_attribute(env, "onTrt")        == 0 &&
-              (get_server_count(env, "A") < get_capacity(env, "A"))  # <- slot free?
-        ok + 1L
-      },
-      continue = rep(TRUE, 2),
-      ## 1: slot not free / not eligible -> skip (reschedules via reactive draw)
-      trajectory(),
-      ## 2: take the slot, mark on-treatment, leave the waitlist, time the course
-      trajectory() %>%
-        seize("A", 1) %>%                                   # the ONLY seize of A
-        set_attribute("onTrt", 1) %>%
-        set_attribute("waitingForA", 0) %>%
-        set_attribute("leftWL", function() { wl_leave(get_name(env)); 1 }) %>%
-        set_attribute("tEndA", function() now(env) + rexp(1, inputs$mu_A))
-    )
+```r
+# THE DELTA (model10) — get_confirm(): the FIRE-TIME GUARD.
+get_confirm <- function(traj, inputs) {
+  traj |> branch(
+    function() if (get_capacity(env, "confirm") > get_server_count(env, "confirm")) 1L else 2L,
+    continue = c(TRUE, TRUE),
+    trajectory() |>                          # a slot is free: take it, leave the line, treat if still S1
+      seize("confirm") |> set_attribute("HasConfirm", 1) |>
+      ( \(t) confirm_and_maybe_treat(t) )(),
+    trajectory()                             # no slot free: skip; the reactive reschedule re-defers
+  )
 }
 ```
 
-This guard is the reason the wait formula does not have to be exactly right. If the analytic draw fires the event a little early — before a slot has actually freed — the guard simply declines to seize and the reactive engine re-samples a fresh wait. The capacity `c` is therefore enforced by a hard `get_server_count < get_capacity` test at the only moment it matters, the instant of the `seize`. The approximation lives entirely in the *distribution of the wait*, never in the cap. A companion timed event (`EndA`) releases the slot at end of course, freeing it for the next waiter.
-
-### The treatment effect: gated on `onTrt`
-
-For the design to be testable we need the treatment to actually *do* something while held — and to do nothing when we switch the effect off (the null-effect regression test). The effect lives in the competing-risk draws, gated on the on-treatment flag the guard sets:
+The selling point of A is restraint: it adds contention **without editing `main_loop.R`**,
+the decade-stable engine. Everything is one resource, one waitlist, and two registry
+events (acquire, release). Run it against the molecular standard of care:
 
 ```{r}
-#| label: approach-A-delta-effect
-#| eval: false
-# From model-A.R — years_till_sick2(): progression is SLOWED while on treatment.
-# Setting tx_prog_factor = 1 turns the effect off (the null-effect test).
-years_till_sick2 <- function(inputs) {
-  state <- get_attribute(env, "State")
-  onB   <- get_attribute(env, "trtB")
-  onTrt <- get_attribute(env, "onTrt")          # <- set by the fire-time guard
-
-  if (state == 1) {
-    rate <- inputs$r.S1S2
-    if (onB)        rate <- rate * inputs$hr.S1S2.TrtB    # treatment B (Model 10)
-    if (onTrt == 1) rate <- rate * inputs$tx_prog_factor  # treatment A slows progression
-    rexp(1, rate)
-  } else inputs$horizon + 1
+#| label: model-10-cea
+source(here::here("R/model10.R"), chdir = TRUE)   # Approach A: finite confirm resource + endogenous wait
+run_arm <- function(strategy, N = 2000, seed = 7) {
+  des_run(modifyList(inputs, list(strategy = strategy, N = N)), seed = seed) |>
+    group_by(name) |>
+    summarise(cost = sum(dcost), qaly = sum(dqaly), .groups = "drop") |>
+    summarise(cost = mean(cost), qaly = mean(qaly))
 }
-```
-
-Because the progression rate is read *at draw time* and the draw is reactive, a patient who acquires a slot mid-wait has their next progression time re-sampled at the slowed rate — and a patient who never acquires one progresses at the full rate the entire time. The effect is coupled to occupancy through `onTrt`, which only the guard can set. (The recovery draw `years_till_healthy()` is gated the same way, improved by `tx_recov_factor`.)
-
-### Watching it work
-
-Now we run it. The first chunk sources the model's functions only — `model-A.R` runs a heavy experiment block on `source()` unless we set `MODEL_A_NORUN`, so we set it first.
-
-```{r}
-#| label: source-approach-A
-Sys.setenv(MODEL_A_NORUN = "1")   # source the FUNCTIONS only; skip the experiment block
-source(here::here("R/model-A.R"), chdir = TRUE)               # model-A.R loads its own packages and keeps simmer::now() on top
-```
-
-**First, the cap is exact and the disease keeps progressing.** We run one moderately sized cohort (`N = 500`, `c = 5`), using `compute_outcomes = FALSE` to skip the expensive per-patient costing — for an occupancy and progression audit we need only the resource monitor and the arrivals ledger.
-
-```{r}
-#| label: approach-A-capacity
-set.seed(101)
-run_A <- des_run(
-  modifyList(inputs, list(N = 500, treatA = TRUE, treatB = FALSE, n.capacity = 5)),
-  compute_outcomes = FALSE)            # skip the period-overlap costing; this is an audit
-
-# (i) the A-server never exceeds the cap, and never goes negative
-res_A <- dplyr::filter(run_A$resources, resource == "A")
-cap_A <- 5
-
-# (ii) disease progresses DURING the wait: S1-entrants who reached S2 or died
-#      WITHOUT ever seizing a treatment slot.
-arr  <- run_A$arrivals
-ever <- function(r) unique(arr$name[arr$resource == r])
-s1 <- ever("sick1"); treated <- ever("A"); s2 <- ever("sick2"); died <- ever("death")
-n_s1             <- length(s1)
-n_treated        <- length(treated)
-n_s2_untreated   <- length(setdiff(intersect(s2, s1), treated))
-n_died_untreated <- length(setdiff(intersect(died, s1), treated))
-
+mol <- run_arm("mol"); field <- run_arm("field")
 knitr::kable(
   data.frame(
-    Check = c("Max servers busy (cap = 5)", "Min servers busy",
-              "Any instant over capacity?",
-              "S1-entrants in cohort", "...ever treated",
-              "...reached S2 untreated", "...died untreated"),
-    Value = c(max(res_A$server), min(res_A$server),
-              as.character(any(res_A$server > cap_A)),
-              n_s1, n_treated, n_s2_untreated, n_died_untreated)),
-  caption = "Capacity is enforced exactly (servers never exceed 5, never go negative), yet disease keeps racing: most S1-entrants reach S2 or die without ever being treated.")
+    Strategy = c("Molecular (SoC)", "Field test", "Incremental (field − mol)"),
+    Cost     = round(c(mol$cost, field$cost, field$cost - mol$cost)),
+    QALYs    = round(c(mol$qaly, field$qaly, field$qaly - mol$qaly), 3)),
+  align = "lrr", format.args = list(big.mark = ","),
+  caption = "Approach A — endogenous confirmatory queue (N = 2000, paired seeds).")
 ```
 
-The cap is honoured to the instant — servers never exceed 5 and never go negative — and yet a large fraction of patients who became sick reached S2 or died **without ever acquiring a slot.** That is the invariant working as intended: scarcity does not freeze anyone. The waiting room is not a stasis chamber. Compare this directly with Model 8, where constraining capacity *prevented* deaths; here it does the opposite, because the patient's competing-risk clock never stops.
-
-**Second, the wait is endogenous.** Shrink the capacity and the realised wait — measured patient by patient as the gap between entering S1 and seizing a slot — should rise. We sweep three capacities at fixed `N`.
-
-```{r}
-#| label: approach-A-endogeneity
-# realised wait per patient: S1-entry -> A-seize (most recent prior S1 entry)
-mean_wait_for <- function(run) {
-  arr <- run$arrivals
-  a  <- arr[arr$resource == "A", ]; s1 <- arr[arr$resource == "sick1", ]
-  if (!nrow(a)) return(c(mean_wait = NA_real_, treated = 0))
-  waits <- numeric(0)
-  for (nm in unique(a$name)) {
-    a_st  <- sort(a$start_time[a$name == nm])
-    s1_st <- sort(s1$start_time[s1$name == nm])
-    for (ast in a_st) {
-      prior <- s1_st[s1_st <= ast + 1e-9]
-      if (length(prior)) waits <- c(waits, ast - max(prior))
-    }
-  }
-  c(mean_wait = mean(waits), treated = length(unique(a$name)))
-}
-
-sweep <- lapply(c(2, 5, 25), function(cc) {
-  set.seed(202)
-  w <- mean_wait_for(des_run(
-    modifyList(inputs, list(N = 500, treatA = TRUE, treatB = FALSE, n.capacity = cc)),
-    compute_outcomes = FALSE))
-  data.frame(`Capacity c`       = cc,
-             `Mean wait (yr)`    = round(unname(w["mean_wait"]), 2),
-             `Patients treated`  = unname(w["treated"]),
-             check.names = FALSE)
-})
-
-knitr::kable(
-  do.call(rbind, sweep), row.names = FALSE,
-  caption = "Endogeneity: as the capacity c shrinks, the mean realised wait rises and fewer patients are ever treated. (N = 500, single seed; the 10-seed means are in the validation ladder.)")
-```
-
-The mean wait climbs steadily as the resource is squeezed, and the number of patients ever treated falls in step — exactly the gradient a scarce-resource model must produce. (These are single-seed figures, shown live to demonstrate the mechanism; the noise-killed 10-seed means appear in the validation ladder and the A-vs-B table.) The endogeneity also runs the other way — holding `c` fixed and raising `N` lengthens the wait — which is the second half of the same demand-coupling.
-
-This is the design the methodology note recommends for production: robust, teachable, and a small extension of Model 10 — replace the exogenous wait with an occupancy-derived wait plus a live-occupancy guard, and add nothing else. But it buys that robustness with one honest concession, which we state plainly.
+The field test is **still cheaper** — its cost advantage was always the test, not the
+queue — but its QALY advantage has **evaporated**: the incremental effect that was +0.26
+with no queue, and +0.27 with the exogenous one, is now essentially **zero, even slightly
+negative**. The bottleneck did exactly what the exogenous wait could not show: the field
+test's referral flood backs up the queue, true positives progress to `S2` before their
+confirmation arrives, and the extra cancers it caught at screening are lost again in the
+line. The ICER has drifted out of the southeast (dominant) quadrant and onto the boundary
+of the **southwest** — cheaper, but no longer clearly better.
 
 ::: {.callout-note}
-## Honest caveat: capacity is exact, the wait *distribution* is an approximation
-
-Approach A enforces the capacity cap `c` **exactly** — the fire-time guard guarantees it — but the *distribution* of the wait is an analytic approximation, not an exact queue:
-
-- It has the **correct first moment under saturation** (when all `c` servers stay busy, the M/M/c-flavoured mean is right), which is why mean-based CEA endpoints — QALYs, costs, deaths, S2 person-years — come out faithfully.
-- But it is a **single exponential**, so it is over-dispersed (coefficient of variation 1, versus an Erlang's $1/\sqrt{n}$). It assumes all servers stay busy, so it *under*-estimates the wait in light traffic, and it ignores that waiters ahead of you may abandon, so it can *over*-estimate `n_ahead`.
-- It carries **free parameters** — the service rate `mu_A`, the `rate_admit_when_free`, and the M/M/c rate form itself — which are modelling assumptions to be named and defended, not emergent from the simulation.
-
-For mean-based cost-effectiveness this is benign. If you report the *wait distribution itself* — tails, variance, time-to-treatment percentiles — the single-exponential shape is not good enough, and you should reach for Approach B's exact FIFO queue (next section) or upgrade the draw. We validate the claim "A reproduces an exact queue for mean-based endpoints" head-to-head in Part IV; that cross-check is what licenses shipping the cheap, robust design.
+## Honest caveat: the cap is exact, the wait *distribution* is an approximation
+Approach A enforces the capacity cap to the patient (the guard never over-fills), but the
+*wait itself* is a single-exponential, M/M/c-flavoured estimate — correct in its first
+moment under saturation, not an exact emergent queue. For mean CEA endpoints that is
+usually enough; when the **shape** of the wait matters, you want Approach B. Note also that
+A's queue is invisible to `simmer`'s resource monitor (`get_mon_resources()` shows zero
+queue), because the patient never actually blocks on the resource — the line lives in the
+external waitlist, not in the server.
 :::
 
-## Approach B — the claim-ticket companion
+## Approach B — the claim-ticket companion (Model 11)
 
-**Objective:** build the *exact* contention model — a genuine `simmer` FIFO `seize()` queue, the real thing Model 8 reached for and the gallery's traps all failed to tame — while still honouring the shared invariant that the patient must never block. Approach A bent the wait into an analytic event and kept everything in one arrival; Approach B takes the opposite tack. It accepts that *something* has to block in the real queue, and arranges for that something to be a disposable stand-in rather than the patient. The patient stays in the event loop, untouched; a throwaway *companion* arrival does the blocking on their behalf and signals back the moment it wins a slot. The reward for the extra machinery is exactness: the contention is no longer approximated, it *emerges* from `simmer`'s own queue discipline. The cost is fragility, which we will name precisely at the end.
+Approach B refuses the approximation and pays for it in machinery. The idea: the patient
+stays in the event loop, never blocking — but at the moment they screen positive they
+**`clone()` a disposable companion** whose only job is to stand in the *real* `seize()`
+queue. The companion carries no disease clock, so it is free to block; when it reaches the
+front and acquires a slot, it **signals** the patient, who then (still in the loop) starts
+treatment. The queue is `simmer`'s own FIFO — exact, not modelled.
 
-The car-race picture makes the idea concrete. In Approach A the driver estimated their own wait from how many cars were ahead at the one pit lane. Here the driver never queues at all. They send a *runner* to stand in the pit-lane line holding a claim ticket; the driver keeps racing. When the runner reaches the front and secures the bay, they wave the driver in. If the driver's race ends first — they spin out, or finish — they recall the runner, who simply steps out of the line, having held nothing. The driver's clock never stops. That runner is the companion.
+Two details make it correct. First, the signal must name the *patient*, not the companion —
+so we key it on an inherited `pid` attribute (inside the companion, `get_name(env)` would
+return the *companion's* name). Second, the patient does not treat inside the signal
+handler; the handler sets a flag and forces a **registry event** to fire, so the reactive
+resample re-draws progression at the *treated* rate. (Treating inside the handler alone
+would not resample the competing risks.)
 
-### The companion: a ticket that holds the real queue
+```r
+# THE DELTA (model11) — spawn the companion, then trap its acquire signal.
+spawn_confirm_companion <- function(traj, inputs, is_tp) {
+  traj |>
+    set_attribute("IsTruePos", is_tp) |>
+    trap(sig_acq,                                   # listen for "your slot is ready" (keyed on pid)
+         handler = trajectory() |>
+           set_attribute("confirmReady", 1) |>
+           set_attribute("aConfirmAcq", function() now(env))) |>   # force the registry event to fire now
+    clone(n = 2,
+          trajectory("self"),                       # the patient: re-enters the event loop, never blocks
+          companion_trajectory(inputs)) |>          # the companion: stands in the real queue
+    synchronize(wait = FALSE)                        # the self-clone survives instantly
+}
 
-The companion is a **separate arrival** with exactly one job: block in the real, finite-capacity `treatment` queue, and report back. It carries **none** of the patient's tallies — no `time_in_model`, no `sick1`, no health-state counters — so blocking it freezes nothing that matters, and because it shares no redeemable resource with the patient there is no double-release across the clone boundary (the exact failure mode of Trap 2). Read top to bottom, the companion is the whole contention mechanism in six activities:
-
-```{r}
-#| label: approach-B-companion-delta
-#| eval: false
-# From model-B.R (§C). The companion is a SEPARATE arrival. It touches ONLY
-# "treatment" (the contended resource) and never any tally -> no shared seize
-# across the clone boundary -> no double-release. Blocking in seize() here is
-# fine: the companion carries no hand-rolled clock to freeze.
+# The companion holds the real blocking queue; carries NO disease tally -> nothing to freeze.
 companion_trajectory <- function(inputs) {
   trajectory("companion") |>
-    # If the patient leaves S1 while we are still queued, renege out (we hold
-    # nothing, so this frees nothing -- the slot is freed only on release below).
-    renege_if(sig_abandon, out = trajectory()) |>   # <-- abandon hatch, armed FIRST
-    seize("treatment", 1) |>           # BLOCKS here when all c slots are full
-    renege_abort() |>                  # got a slot: cancel the abandon-renege
-    send(sig_acq) |>                   # tell the patient: treatment acquired
-    timeout(inputs$treatment_duration) |>
-    release("treatment", 1)            # hold for the slot-occupancy duration
+    renege_if(sig_abandon, out = trajectory()) |>   # patient left S1 while queued -> drop out
+    seize("confirm", 1) |>                           # BLOCKS here until a slot frees (this is the real FIFO)
+    renege_abort() |>
+    send(sig_acq) |>                                 # tell the patient: slot acquired
+    timeout(function() rexp(1, inputs$mu.confirm)) |># hold the slot for the workup
+    release("confirm", 1)
 }
 ```
 
-Three details carry the whole design. First, `renege_if(sig_abandon, ...)` is armed **before** the blocking `seize`: this is the one lever (verified in Trap 1) that *can* pull an arrival out of a `seize` queue — `trap()`/`wait()` are ignored while blocked, but `renege_if` still fires. Second, the signal names are **per-patient** (`sig_acq`/`sig_abandon` resolve to `acq_<pid>`/`abandon_<pid>`), because `send()` is a global broadcast and the only way to address one patient is to bake their id into the string. Third, the companion is the *only* arrival that ever touches `treatment`; the patient never seizes it, which is exactly why the patient's hand-rolled clock keeps turning.
-
-### Spawning the companion: a `clone` that never crosses the tallies
-
-When the patient enters S1 and wants the contended treatment, `sick1()` does two things. It `trap()`s the per-patient acquire signal — but crucially the trap handler does **not** flip the patient's state directly; it sets a `trtReady` flag and forces the "Treatment acquired" *registry event* to be the soonest event, so the state change is routed through the reactive resample (this is the load-bearing invariant Trap 2 taught us). Then it `clone(n = 2, self, companion)` and `synchronize(wait = FALSE)`, so the never-blocking self-clone is always the survivor and re-enters the loop, while the companion goes off to queue:
+Run it the same way:
 
 ```{r}
-#| label: approach-B-sick1-delta
-#| eval: false
-# From model-B.R (§D). sick1(): trap the acquire signal, then spawn the companion.
-sick1 <- function(traj, inputs) {
-  traj |>
-    set_attribute("State", 1) |>            # S1
-    release("healthy") |>
-    seize("sick1") |>
-    # Per-patient acquire listener. The trap handler does NOT change state
-    # directly: it sets trtReady=1 and forces the "Treatment acquired" registry
-    # event to be the soonest event NOW (aTrt = now), so that event fires THROUGH
-    # process_events and the reactive resample re-draws the competing risks at the
-    # treated rates. (Flipping state in the trap handler alone would NOT resample
-    # the sick2/healthy timers the patient is already racing.)
-    trap(sig_acq,
-         handler = trajectory() |>
-           set_attribute("trtReady", 1) |>
-           set_attribute("aTrt", function() now(env))) |>
-    # If the patient wants the contended treatment, spawn the companion ticket.
-    branch(
-      function() get_attribute(env, "trtA") + 1,   # 0 or 1
-      continue = rep(TRUE, 2),
-      trajectory(),                                 # 1: no treatment A wanted
-      trajectory() |>                               # 2: spawn companion
-        clone(n = 2,
-              trajectory("self"),                   # patient-self: re-enters loop
-              companion_trajectory(inputs)) |>      # companion: seizes "treatment"
-        synchronize(wait = FALSE)                   # self survives -> back to loop
-    )
-    # ... (treatment-B branch unchanged from model10) ...
-}
-```
-
-Contrast this with Trap 2's clone. There, the patient released a *shared* tally (`healthy`) before cloning, and both children touched the state counters — guaranteeing a double-release crash. Here the `clone` is kept strictly inside the `branch` wrapper, the `self` child is empty (it re-enters the loop carrying its own ledger), and the companion touches **only** `treatment`. No tally crosses the clone boundary, so the single-redemption invariant is never violated. The same primitive that crashed in the gallery works cleanly once it is pointed at a resource the two children do not share.
-
-### Acquiring and abandoning: the effect window
-
-When the companion wins a slot it `send()`s `sig_acq`. The trap fires, forces the "Treatment acquired" registry event to now, and that event — `treatment_acquired()` — turns the effect on: it sets `onTrt = 1` and seizes the `Inf`-capacity `treatment_held` tally, the patient-side counter that integrates the *effect window* for costing (the Model 7/10 analogue of resource "A"). The reactive resample that follows re-draws progression and recovery at the **treated** rates:
-
-```{r}
-#| label: approach-B-acquired-delta
-#| eval: false
-# From model-B.R (§D). Fires once the acquire signal set trtReady (and the patient
-# is still an untreated S1). Activates the EFFECT: onTrt flag + the Inf
-# "treatment_held" tally for costing the effect window. The reactive resample in
-# process_events then re-draws progression/recovery at the TREATED rates.
-treatment_acquired <- function(traj, inputs) {
-  traj |>
-    branch(
-      function() if (get_attribute(env, "trtReady") == 1 &&
-                     get_attribute(env, "onTrt")    == 0 &&
-                     get_attribute(env, "State")    == 1) 1 else 2,
-      continue = rep(TRUE, 2),
-      trajectory() |>
-        set_attribute("onTrt", 1) |>
-        seize("treatment_held", 1),               # Inf tally = EFFECT window
-      trajectory()
-    )
-}
-
-# Leaving S1 (recover / progress / die) => abandon any pending/held treatment.
-# send() reaches a still-queued companion (it reneges out); a companion holding a
-# slot keeps it until treatment_duration. We end the EFFECT window here by dropping
-# "treatment_held" (the documented effect-vs-occupancy decouple).
-abandon_treatment <- function(traj) {
-  traj |>
-    send(sig_abandon) |>
-    set_attribute("trtReady", 0) |>
-    branch(
-      function() get_attribute(env, "onTrt") + 1,
-      continue = rep(TRUE, 2),
-      trajectory(),                                # not on treatment: nothing held
-      trajectory() |>
-        release("treatment_held", 1) |>
-        set_attribute("onTrt", 0)
-    )
-}
-```
-
-`abandon_treatment()` runs on **every** exit from S1 — recovery, progression to S2, death, and the horizon cleanup all call it. It `send()`s the per-patient abandon signal, which reaches a still-queued companion and reneges it out of the line (freeing nothing it never held), and it drops the `treatment_held` tally to close the effect window. This is what keeps the disease racing during the wait: nothing about being queued suspends a patient's death or progression timers, and when one of them fires it simply recalls the runner.
-
-### A live run: the queue, the cap, abandonment, and the race
-
-We can watch all four properties at once. We `source(here::here("R/model-B.R"), chdir = TRUE)` for its definitions — its `sys.nframe()` guard means a plain `source()` skips the heavy run block — and then run the engine *without* the per-patient costing pass, since for the mechanism demonstration we need only the arrivals ledger and the resource gauge. (The full discounted-QALY costing is the render bottleneck; we reserve it for the small head-to-head table in Part IV.)
-
-```{r}
-#| label: approach-B-demo
-set.seed(20)
-source(here::here("R/model-B.R"), chdir = TRUE)   # function defs only: the sys.nframe() guard skips the run block
-suppressMessages({ library(dplyr); library(knitr) })
-
-# Engine-only run: do the simmer simulation and read the monitors, but SKIP the
-# per-patient split_arrivals() costing (the render bottleneck). For the mechanism
-# demonstration we need only the arrivals ledger and the resource gauge.
-run_engine_B <- function(ov) {
-  env <<- simmer("SickSicker_B_demo")
-  traj <- des(env, ov)
-  env |>
-    create_counters(counters) |>
-    add_resource("treatment", capacity = ov$n.capacity, queue_size = Inf) |>
-    add_generator("patient", traj, at(rep(0, ov$N)), mon = 2) |>
-    run(ov$horizon + 1/365) |>
-    wrap()
-  list(arrivals  = get_mon_arrivals(env, per_resource = TRUE),
-       resources = get_mon_resources(env))
-}
-
-ov  <- modifyList(inputs, list(n.capacity = 3, N = 500, treatA = TRUE, treatB = FALSE))
-run <- run_engine_B(ov)
-
-trt <- subset(run$resources, resource == "treatment")
-arr <- run$arrivals
-n_companions <- nrow(subset(arr, resource == "treatment"))            # tickets spawned
-n_treated    <- nrow(subset(arr, resource == "treatment_held"))       # acquired a slot
-n_reneged    <- sum(subset(arr, resource == "treatment")$activity_time < 1e-9)
-n_s1   <- length(unique(subset(arr, resource == "sick1")$name))
-n_s2   <- length(unique(subset(arr, resource == "sick2")$name))
-n_dead <- nrow(subset(arr, resource == "death"))
-
+#| label: model-11-cea
+source(here::here("R/model11.R"), chdir = TRUE)   # Approach B: claim-ticket companion holds the exact FIFO queue
+mol <- run_arm("mol"); field <- run_arm("field")
 knitr::kable(
   data.frame(
-    Property = c("(i)  Max in treatment (server)", "(i)  Max waiting (queue)",
-                 "(ii) Capacity breached? (server > 3)", "(ii) Negative server-count? (leak)",
-                 "(iii) Companions spawned (tickets)", "(iii) ... acquired a slot (treated)",
-                 "(iii) ... reneged mid-queue (held nothing)",
-                 "(iv) S1-entrants who wanted treatment", "(iv) ... progressed to S2 untreated",
-                 "(iv) ... died"),
-    Value = c(max(trt$server), max(trt$queue),
-              as.character(any(trt$server > ov$n.capacity)),
-              as.character(any(trt$server < 0)),
-              n_companions, n_treated, n_reneged, n_s1, n_s2, n_dead),
-    check.names = FALSE),
-  caption = "Approach B at capacity 3, N = 500: a real FIFO queue forms (i), the cap is enforced exactly (ii), abandonment frees slots (iii), and the disease races on while patients wait (iv)."
-)
-
-# Endogeneity: the EXACT FIFO wait (companion acquire - enqueue) grows as c shrinks.
-waits <- sapply(c(1e9, 5, 2, 1), function(cap)
-  unname(measure_waits(
-    modifyList(inputs, list(n.capacity = cap, N = 500, treatA = TRUE, treatB = FALSE)),
-    seed = 20)["mean_wait"]))
-
-knitr::kable(
-  data.frame(`Capacity c` = c("Inf", "5", "2", "1"),
-             `Mean FIFO wait (yr)` = round(waits, 2), check.names = FALSE),
-  caption = "Endogeneity: the exact FIFO wait lengthens as the c slots are squeezed (0 -> 5.5 years)."
-)
+    Strategy = c("Molecular (SoC)", "Field test", "Incremental (field − mol)"),
+    Cost     = round(c(mol$cost, field$cost, field$cost - mol$cost)),
+    QALYs    = round(c(mol$qaly, field$qaly, field$qaly - mol$qaly), 3)),
+  align = "lrr", format.args = list(big.mark = ","),
+  caption = "Approach B — exact FIFO confirmatory queue (N = 2000, paired seeds).")
 ```
 
-Read the first table by its four labels. **(i)** A real queue forms: three slots are full and a backlog of up to 101 tickets waits behind them — this is `simmer`'s native FIFO discipline, not an approximation of it. **(ii)** The cap is enforced *exactly* — the server count never exceeds 3 and never goes negative. **(iii)** Abandonment dominates: 2,026 companion tickets are spawned (S1 episodes recur, so one patient can send several runners over a lifetime), but only 75 ever win a slot; the other 1,954 renege out of the line mid-queue, having held nothing, because their patient progressed, died, or recovered while they waited. **(iv)** That is the disease racing during the wait made visible: of 488 patients who entered S1 wanting treatment, 359 progressed to S2 and 274 died — most of them *never treated*, because the three slots could not turn over fast enough. The second table closes the loop on endogeneity: with unlimited capacity the FIFO wait is zero, and it climbs to roughly 5.5 years as the slots are squeezed to one — a genuinely emergent, occupancy-driven wait, several years longer than Approach A's analytic single-Exp at the same capacity (a difference we examine head-to-head in Part IV).
-
-Compare this to Model 8's broken run. There, constraining capacity *lowered* deaths, because blocked patients were frozen out of dying. Here, constraining capacity *raises* progression and deaths — sicker, untreated people accumulate in the queue exactly as a scarce-resource health system would predict. Same finite cap, same FIFO queue; the difference is that the patient is no longer the one blocking in it.
-
-### The honest caveats
-
-Approach B is the exact reference model, and it earns that title — but it is fragile in a way Approach A is not, and the fragility is *silent*. None of the invariants below raises an error when violated; the run completes and the numbers are quietly wrong. They are the price of using `clone`/`synchronize`/`send`/`trap` at all, and they are the reason Approach A exists as the robust production alternative.
+Approach B tells the same story — field cheaper, its effectiveness advantage gone, the ICER
+in the **southwest** — but it gets there through the *exact* queue rather than an analytic
+proxy. Unlike A, B's queue is real and visible: `get_mon_resources()` shows it peaking at a
+couple of hundred patients waiting behind the field test's referral flood. That fidelity is
+B's selling point.
 
 ::: {.callout-warning}
-## Fragile invariants — each one breaks silently if violated
-
-Approach B works only while **all** of the following hold. Violate any and the run still completes, with no error, returning wrong numbers (the null-effect regression test in Part IV is the permanent guard that catches them):
-
-- **The contended `treatment` resource is NOT in `counters`.** If it is added to the `Inf`-capacity tally list, its capacity is silently overridden to `Inf` and all contention vanishes — the queue never forms.
-- **The state change is routed through the registry event, not the trap handler.** The `trap(sig_acq)` handler only sets `trtReady` and forces `aTrt = now()`; the actual effect (`onTrt`, the treated rates) is applied by the reactive `treatment_acquired` event. Flipping state inside the trap handler would skip the reactive resample, leaving the patient racing the *untreated* progression/recovery timers they had already sampled.
-- **`synchronize(wait = FALSE)`.** The empty self-clone must survive and re-enter the loop. `wait = TRUE` would block the survivor until the companion sibling reaches the sync point — which it never does (it is off in the seize queue) — deadlocking the patient forever (the Trap 2 deadlock).
-- **Per-patient signal names.** `send()` is a global broadcast; `sig_acq`/`sig_abandon` must encode the patient id (`acq_<pid>`/`abandon_<pid>`). A global signal name would let one patient's acquire or abandon fire for every waiter at once (the Trap 1 failure).
-
-Ship Approach B only alongside the null-effect regression test, which fails loudly if any of these silently breaks.
+## B's fragility — each invariant breaks silently if violated
+B works only because several fragile things are exactly right: the signal is keyed on the
+inherited `pid` (key it on `get_name(env)` and the companion signals nobody); the patient
+treats via a *registry event*, not in the trap handler (otherwise the competing risks are
+not resampled); the companion carries **no** state tally (otherwise the clone double-counts
+or double-releases it); and leaving `S1` must `send()` an abandon signal so a still-queued
+companion reneges out. Get any one wrong and the model produces plausible-looking but wrong
+numbers. Approach A has none of these failure modes — which is the whole tradeoff, and the
+subject of Part IV.
 :::
 
-There is one further subtlety, not a bug but a documented modelling choice, and it must be carried into the cost-effectiveness analysis explicitly.
-
-::: {.callout-note}
-## The effect window is decoupled from slot occupancy
-
-The treatment **effect** window (`onTrt`: from acquisition until the patient leaves S1) is deliberately decoupled from the slot-**occupancy** window (the companion holds the `treatment` slot for the full `treatment_duration` regardless). We cost and apply the effect over the *effect* window, via the patient-side `treatment_held` tally — the contended `treatment` resource is used **only** to enforce capacity and form the queue, and is never costed directly. The consequence is visible in the live run: the `treatment` gate can still read as occupied past the horizon (a companion holding its slot for the remainder of `treatment_duration`), while the costed `treatment_held` tally has already drained to zero. That gate occupancy is *by design*; the costing follows the effect window, not the slot.
-
-Two practical rules follow. **Count treatments from the held tally, never from the per-resource `treatment` rows.** Most `treatment` arrivals are reneged companions with `activity_time = 0` (1,954 of 2,026 in the run above); `n_treated` is the count of `treatment_held` rows (75), the patients who actually received the effect. And **document the decoupling in the CEA write-up** — a small number of patients (those who leave S1 before `treatment_duration` elapses) free their slot while still notionally treated, or vice versa. It is a defensible choice, but it is a choice, and the reader is owed it.
-:::
-
-With Approach A's robust approximation and Approach B's exact reference both in hand, the obvious question is whether they agree — and if so, whether the cheap, robust A can stand in for the fragile, exact B. That cross-validation, and the full validation ladder, is Part IV.
 
 # Part IV — Comparison, validation, and guidance
 

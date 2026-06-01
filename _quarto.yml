@@ -1,0 +1,19 @@
+project:
+  type: default
+  execute-dir: project   # run every chunk with CWD = repo root, so source("R/..") / figures/.. resolve uniformly
+  render:
+    - manuscript/         # the tutorial manuscript (html + pdf)
+    - slides/             # the revealjs talk built from the manuscript
+    # workshop-2025/ is an archived, self-contained project — render it via `cd workshop-2025 && quarto render`
+
+execute:
+  freeze: auto      # re-run a chunk only when the .qmd text changes (see README: clear _freeze/ after editing R/*.R)
+  echo: true        # this is teaching material — show the code
+  warning: false
+  message: false
+
+knitr:
+  opts_chunk:
+    fig.align: center
+
+bibliography: references.bib   # single shared bibliography at the repo root
