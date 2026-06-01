@@ -1,16 +1,21 @@
 ---
 title: "Discrete-Event Simulation for Cost-Effectiveness Analysis with Resource Contention"
-subtitle: "A model-by-model build of the Sick-Sicker model, ending in two contention designs"
+subtitle: "A model-by-model build of the Sick-Sicker model, from natural history to a screening decision under capacity contention"
 author:
   - "Shawn Garbett"
   - "John Graves"
 date: today
 abstract: >
-  We build a discrete-event simulation (DES) of the Sick-Sicker cost-effectiveness model one
-  idea at a time, then confront the problem DES is uniquely suited to and uniquely awkward at:
-  a genuinely finite treatment resource that patients must queue for while their disease keeps
-  progressing. We develop two faithful designs — an endogenous-wait registry event (A) and a
-  claim-ticket companion (B) — and compare their tradeoffs.
+  We build a discrete-event simulation (DES) of the Sick-Sicker cost-effectiveness model one idea
+  at a time, then use it to evaluate a concrete policy decision from a lower-middle-income country:
+  whether to replace an expensive, high-accuracy molecular screening test (the standard of care)
+  with a cheaper, lower-accuracy field test that reaches far more people. Ignoring downstream
+  capacity, the field test is dominant — cheaper *and* more effective. But its referral volume
+  overwhelms a fixed confirmatory-diagnostic bottleneck, and patients progress untreated while they
+  queue. We show that the way the queue is modelled changes the recommendation: an exogenous (fixed)
+  wait misses the problem, while two faithful endogenous designs — an occupancy-coupled registry
+  event (A) and a claim-ticket companion (B) — drift the cost-effectiveness result out of the
+  dominant quadrant. Throughout we use common random numbers to make the comparison precise.
 ---
 
 ```{r}
@@ -155,7 +160,7 @@ between here and Part III is about reaching this diagram without breaking it.
 
 A cohort Markov model and a patient-level microsimulation can both reproduce the
 *natural history* of Sick-Sicker perfectly well — states, transitions, costs, QALYs.
-For models 1 through 7, DES buys us little a microsimulation would not. So why pay for
+For models 1 through 9, DES buys us little a microsimulation would not. So why pay for
 DES at all? Two things only DES gives cleanly:
 
 1. **Queues and contention.** In a Markov or microsimulation model each patient's
@@ -169,9 +174,9 @@ DES at all? Two things only DES gives cleanly:
    bias entirely (no half-cycle correction), and it is what lets a contended resource
    be enforced *to the instant* a slot frees rather than to the nearest cycle.
 
-So the honest framing for the build ahead: models 1–7 use DES as a clean, exact-time
-microsimulation; the payoff that justifies the machinery only arrives at model 8, when
-a resource finally becomes finite.
+So the honest framing for the build ahead: models 1–9 use DES as a clean, exact-time
+microsimulation; the payoff that justifies the machinery only arrives at model 10, when
+a downstream resource finally becomes finite and patients must queue for it.
 
 ## The cost of DES: a bouncer at an empty venue
 
@@ -195,15 +200,21 @@ numbers in prose.)
 
 ::: {.callout-note}
 ## What we build, and in what order
-Part I builds the cost-effectiveness model one idea per section — the engine
+**Part I** builds the cost-effectiveness model one idea per section — the engine
 (model 1), valuation as a separate pass (model 2), the first competing risk
-(model 3), the first disease state (model 4), recovery (model 5), the full ladder
-(model 6), and a comparator with the first ICER (model 7). Part II then makes a
-resource genuinely finite (model 8) and watches the naive approach break, before a
-gallery of tempting fixes that also fail. Parts III–IV develop and compare the two
-designs that work — the endogenous-wait registry event (**A**) and the claim-ticket
-companion (**B**). Each section adds exactly one new idea; we reference earlier ones
-rather than repeat them.
+(model 3), the first disease state (model 4), recovery (model 5), and the full
+Sick-Sicker ladder (model 6). **Part II** introduces the policy decision: model 7
+adds a one-time *screening* program and establishes the molecular test as the
+standard of care; model 8 introduces the cheaper *field test* as a comparator and —
+ignoring downstream capacity — finds it dominant (cheaper *and* more effective).
+Model 9 inserts an *exogenous* confirmatory wait and shows it gives false reassurance.
+**Part III** makes the confirmatory bottleneck genuinely finite and models the queue
+*endogenously*, two ways: the occupancy-coupled registry event (**A**, model 10) and
+the claim-ticket companion (**B**, model 11). **Part IV** compares them, traces how
+contention drifts the cost-effectiveness result out of the dominant quadrant, and
+closes with guidance and limitations. Each section adds exactly one new idea; we
+reference earlier ones rather than repeat them. Throughout we lean on **common random
+numbers** so that the difference between two strategies is signal, not noise.
 :::
 
 # Part I — Building the cost-effectiveness model
