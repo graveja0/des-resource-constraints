@@ -818,108 +818,178 @@ Read top to bottom, this is the whole curriculum so far in one patient: `H → S
 Models 4–6 were three turns of one crank: state attribute, reactive resampling, state-gated samplers, per-state costing, cleanup arm. The ladder `H → S1 → S2` is now complete and validated patient-by-patient. From here the build changes character — Model 7 adds a *comparator* (and the first ICER), and Part II replaces an `Inf`-capacity counter with a genuinely finite one. No new disease states are coming; the machinery is done.
 :::
 
-## Model 7 — a comparator, and the first ICER
+# Part II — A screening decision
 
-**Objective:** turn the natural-history model into a *comparative* one. Up to now every model has described a single world. Cost-effectiveness analysis needs two: a world with the intervention and a world without it, run under the same rules, so the difference between them is the intervention's effect and nothing else. This is the pivot from describing disease to evaluating a decision.
+Part I built a faithful natural history: a cohort flows `H → S1 → S2`, recovers
+occasionally, and dies — and we can price the result in discounted costs and QALYs.
+Nothing in it was contended; `simmer` was only a timeout-and-tally engine. We now put
+that model to work on a concrete policy question, and in doing so introduce the one
+ingredient Part I lacked: a resource that more than one patient wants at once.
 
-Two small ideas carry the whole section.
+::: {.callout-note}
+## The decision (the Republic of SMDM)
+A lower-middle-income country screens for a cancer with a long pre-clinical phase
+(our `S1`). The **standard of care** is an accurate **molecular test** — high
+sensitivity and specificity — but it needs cold chain, imported cartridges, and a
+laboratory, so it is expensive and reaches only about **12 %** of eligible people.
+A challenger has appeared: a cheap **field test** a primary-care nurse can run, at
+roughly one-twelfth the cost, which could reach **50 %** — but it is less accurate
+(more missed cancers, *many* more false alarms). Every screen-positive, true or
+false, must be **confirmed** by a diagnostic workup before treatment, and that
+confirmatory capacity is **fixed**. The question the rest of this document answers:
+*does the field test's flood of referrals overwhelm the bottleneck, and does that
+change the recommendation?*
+:::
 
-First, **a strategy is just a flag.** The default `inputs` already carries `strategy = 'notreat'`. We read it once, at birth, into a patient attribute:
+We reach the answer in four steps. Model 7 turns disease into a *decision* by adding a
+screening program and establishing the molecular test as the standard of care. Model 8
+introduces the field test as a comparator and — ignoring capacity — finds it dominant.
+Model 9 inserts a fixed confirmatory wait and shows it changes little. Only in Part III,
+when the bottleneck becomes genuinely finite and the wait becomes *endogenous*, does the
+picture move.
+
+## Model 7 — the intervention: a screening program
+
+**Objective:** turn the natural-history model into a *comparative* one. Cost-effectiveness
+analysis needs two worlds — with the intervention and without — run under the same rules,
+so the difference between them is the intervention's effect and nothing else. Our
+intervention is **screening**: a one-time test that can catch a patient in the
+pre-clinical `S1` window, where treatment still works, before they progress to deadly `S2`.
+
+Three ideas carry the section, each a small extension of machinery you already have.
+
+**First, a strategy is just a flag.** The `inputs$strategy` value (`'noscreen'`, `'mol'`,
+or `'field'`) is read once, per patient, and every event handler can branch on it. To run
+a different arm we change one value in the inputs list — nothing in the engine moves.
+
+**Second, screening is a one-time event, staggered over a rollout.** A real program does
+not reach everyone on the same day; it rolls out over years. So each patient draws their
+own screen time, `~Uniform(t.screen.start, t.screen.end)`, at birth, and a single
+non-reactive `Screen` event fires at that time. When it fires, two independent draws
+decide what happens: one for **coverage** (is this person reached by the program at all?),
+one for the **result** (given a test, is it positive?). Separating coverage from result is
+what lets us cost the program honestly — *everyone screened pays for the test*, not only
+those who turn out positive.
+
+**Third, a detected true positive is treated, and treatment is an effect plus three costs.**
+A patient still in `S1` whose test is positive is confirmed and treated: they move from the
+`sick1` tally to a `treated_s1` tally (so we can value treated time differently), and an
+attribute `TreatA = 1` switches their `S1 → S2` progression onto the treated hazard
+(`hr.TrtS1S2 = 0.20` — an 80 % reduction). The money enters as three one-time charges,
+stored as attributes and folded into the patient's total: the **test** (`c.screen`), the
+**confirmatory workup** (`c.confirm`), and the **treatment** itself (`c.Trt.onetime`, a
+single procedure, not an annual drip).
+
+![The Petri net for Model 7. A one-time `Screen` transition can move an `S1` token onto treatment (`treated_s1`), where the `S1 → S2` progression arc fires at a reduced rate. Healthy people who screen positive are *false positives*: they pay for the test and workup but are not treated. Everything from Part I still fires underneath.](../figures/petri-model6.png){width=92%}
+
+### The delta: `event_screen.R`
+
+The whole intervention is one event file. Its `time_to_event` returns the patient's
+pre-drawn screen time once, then disables itself (the Part I state-gating idiom). Its
+handler is a `branch()` over four outcomes — not screened, true positive, false positive,
+screened-negative — and the costs attach in exactly the branches that incur them.
 
 ```r
-set_attribute("Treat", function() inputs$strategy == 'treat')
-```
-
-Wrapped in `function()` (the model-1 gotcha), so the flag is resolved per patient rather than once at build time. From then on the patient *carries* its assignment, and every event handler can branch on it. To run the other arm we change one value in the inputs list — nothing in the engine, the registry, or the event files moves.
-
-Second, **a treatment is just a resource.** We have used `capacity = Inf` "counters" all along to integrate time-in-state for costing. A treatment is the same device pointed at a clinical question: a `treat` counter that a treated patient *holds for exactly as long as the treatment applies* — here, the whole S1 stay. Holding it does two things. It accrues the treatment's annual cost `c.Trt` over the held interval, exactly as `healthy`/`sick1`/`sick2` accrue their state costs. And it marks the patient as treated so valuation can apply the improved S1 utility `u.Trt` (0.95) in place of the untreated `u.S1` (0.80). Recovery to H or progression to S2 releases the slot; cleanup releases it at the horizon. Because it is `capacity = Inf`, every treated patient gets it immediately — there is no contention yet. That is the whole point of Part II, and the reason Model 8 exists.
-
-The delta over Model 6 is small and lives in four places: the new `treat` counter, the `Treat` attribute set at birth, a seize/release branch wherever the patient enters or leaves S1, and the cost/QALY selectors that read `c.Trt` and swap in `u.Trt`.
-
-```r
-#| label: model-7-delta
-#| eval: false
-# THE DELTA, part 1 — entering S1 (event_sick1-v2.R): a treated patient seizes 'treat'.
-sick1 <- function(traj, inputs)
-{
-  traj                      |>
-  set_attribute("State", 1) |>      # 1 => Sick 1 (S1)
-  release('healthy')        |>
-  seize('sick1')            |>
+# THE DELTA (event_screen.R): coverage and result are SEPARATE draws.
+screen <- function(traj, inputs) {
+  traj |>
+  set_attribute("Screened", 1) |>          # fire once, then this event is past the horizon
   branch(
-    function() get_attribute(env, "Treat") + 1,   # FALSE->1 (no treat), TRUE->2 (treat)
-    continue = rep(TRUE, 2),
-    trajectory(),                    # arm 1: untreated, do nothing
-    trajectory() |> seize('treat')   # arm 2: hold a treatment slot while in S1
+    function() {
+      state <- get_attribute(env, "State")
+      cov  <- if (inputs$strategy == 'mol') inputs$cov.mol  else inputs$cov.field
+      sens <- if (inputs$strategy == 'mol') inputs$sens.mol else inputs$sens.field
+      spec <- if (inputs$strategy == 'mol') inputs$spec.mol else inputs$spec.field
+      u_cov <- draw_unif("screen")          # reached by the program?
+      u_res <- draw_unif("screen")          # test result?
+      if (inputs$strategy == 'noscreen') return(1L)   # no program
+      if (state >= 2)        return(1L)               # symptomatic: outside screening
+      if (u_cov >= cov)      return(1L)               # not reached -> no test, no cost
+      if (state == 1L && u_res < sens)       return(2L)   # TRUE positive
+      if (state == 0L && u_res < (1 - spec)) return(3L)   # FALSE positive
+      return(4L)                                          # screened negative
+    },
+    continue = rep(TRUE, 4),
+    trajectory(),                                         # 1: not screened — no cost
+    trajectory() |>                                       # 2: TP -> confirm + treat
+      set_attribute("ScreenCost",  screen_unit_cost) |>
+      set_attribute("ConfirmCost", \() inputs$c.confirm) |>
+      set_attribute("TreatA", 1) |>
+      set_attribute("TreatCost", \() inputs$c.Trt.onetime) |>
+      release("sick1") |> seize("treated_s1"),
+    trajectory() |>                                       # 3: FP -> confirm cost, no treatment
+      set_attribute("ScreenCost",  screen_unit_cost) |>
+      set_attribute("ConfirmCost", \() inputs$c.confirm),
+    trajectory() |>                                       # 4: screened negative -> test cost only
+      set_attribute("ScreenCost",  screen_unit_cost)
   )
 }
-# (Symmetrically, recovery to H and cleanup_on_termination release('treat') for treated
-#  patients — every seize is matched by exactly one release, or the ledger leaks.)
-
-# THE DELTA, part 2 — valuation reads the treated world (qaly_arrivals in model-7.R):
-#   the S1 utility depends on the strategy, so the SAME 'sick1' rows are valued differently
-#   in the two arms — this is where the treatment EFFECT enters the QALYs.
-uS1 <- if (inputs$strategy == 'treat') inputs$u.Trt else inputs$u.S1   # 0.95 vs 0.80
-#   ...and cost_arrivals gains a 'treat' selector that bills c.Trt over each held interval.
 ```
 
-With both arms expressible as one flag, the comparison is mechanical: run each, collapse the arrivals ledger to per-patient discounted totals, average over patients, and difference the two arms. One detail is worth stating plainly, because it changes the answer: we seed the two arms **identically** before each run (common random numbers). That gives every patient the same birth age and the same sequence of event draws in both worlds, so the difference between arms is the treatment effect rather than Monte-Carlo noise. With independent seeds the incremental QALY at this `N` is small relative to its sampling error and can even come out the wrong sign; with paired seeds it is stable.
+::: {.callout-note}
+## Why coverage and result are separate draws
+It is tempting to fold coverage into the positive rate — detect a true positive with
+probability `cov × sens` in one `runif()`. That gets the *detection* count right but the
+*cost* wrong: it never lets you charge the test to the people who were screened and came
+back negative, who are the overwhelming majority and the bulk of a program's spend. The
+field test's entire value proposition is "a cheap test at scale," and you cannot see it
+unless the scale — every negative screen — is on the books. So coverage gates first (and
+bills the test), then the result decides what happens next. The `draw_unif()` helper is
+our common-random-number draw; for now read it as `runif(1)` — Model 8 explains what it
+really does.
+:::
+
+### Run it: molecular screening vs no screening
+
+Sourcing `model-7.R` redefines `des_run()` once more. We run the no-screen world and the
+molecular-screening world under matched seeds and difference them.
 
 ```{r}
 #| label: model-7-cea
-set.seed(7)
-source(here::here("R/model-7.R"), chdir = TRUE)   # adds: Treat attribute, 'treat' counter, treatment cost + S1 utility effect
+source(here::here("R/model-7.R"), chdir = TRUE)   # adds the Screen event, treated_s1, and the screening costs
 
-# Run one arm: flip the single 'strategy' flag, aggregate the ledger to per-patient
-# discounted totals, return the mean cost and QALY across patients.
-run_arm <- function(strategy, N = 2000) {
-  des_run(modifyList(inputs, list(strategy = strategy, N = N))) |>
-    group_by(name) |>                                  # one group per patient
+# Run one arm: aggregate the ledger to per-patient discounted totals, average over patients.
+# des_run() takes a seed and pairs the two arms (common random numbers; see Model 8).
+run_arm <- function(strategy, N = 2000, seed = 7) {
+  des_run(modifyList(inputs, list(strategy = strategy, N = N)), seed = seed) |>
+    group_by(name) |>
     summarise(cost = sum(dcost), qaly = sum(dqaly), .groups = "drop") |>
-    summarise(cost = mean(cost), qaly = mean(qaly))    # mean over patients
+    summarise(cost = mean(cost), qaly = mean(qaly))
 }
 
-# Common random numbers: seed each arm IDENTICALLY so the two strategies face the
-# same birth ages and event draws. The difference is then the effect, not noise.
-set.seed(7); notreat <- run_arm("notreat")
-set.seed(7); treat   <- run_arm("treat")
+noscreen <- run_arm("noscreen")
+mol      <- run_arm("mol")
 
-dcost <- treat$cost - notreat$cost
-dqaly <- treat$qaly - notreat$qaly
+dcost <- mol$cost - noscreen$cost
+dqaly <- mol$qaly - noscreen$qaly
 icer  <- dcost / dqaly
-nmb   <- inputs$wtp * dqaly - dcost   # net monetary benefit  (> 0 favours treat)
-nhb   <- dqaly - dcost / inputs$wtp   # net health benefit     (> 0 favours treat)
 
-cea <- data.frame(
-  Strategy = c("No treatment", "Treatment", "Incremental"),
-  Cost     = round(c(notreat$cost, treat$cost, dcost)),
-  QALYs    = round(c(notreat$qaly, treat$qaly, dqaly), 3)
-)
 knitr::kable(
-  cea, align = "lrr", format.args = list(big.mark = ","),
-  caption = "Two-arm cost-effectiveness summary (N = 2000, discounted, paired seeds)."
+  data.frame(
+    Strategy = c("No screening", "Molecular (SoC)", "Incremental"),
+    Cost     = round(c(noscreen$cost, mol$cost, dcost)),
+    QALYs    = round(c(noscreen$qaly, mol$qaly, dqaly), 3)),
+  align = "lrr", format.args = list(big.mark = ","),
+  caption = "Molecular screening vs no screening (N = 2000, discounted, paired seeds)."
 )
 ```
 
 ```{r}
 #| label: model-7-icer
 #| echo: false
-cat(sprintf("ICER = %s per QALY    NMB = %s    NHB = %.3f\n",
+cat(sprintf("ICER (molecular vs no screening) = %s per QALY  (WTP = %s)\n",
             format(round(icer), big.mark = ","),
-            format(round(nmb),  big.mark = ","), nhb))
+            format(inputs$wtp, big.mark = ",")))
 ```
 
-Read the three summary numbers together. The **ICER** (incremental cost ÷ incremental QALY) is about £/$151,000 per QALY: treatment buys health, but at a price above the £/$100,000 willingness-to-pay threshold in `inputs$wtp`. The **net monetary benefit** (`wtp × dqaly − dcost`) and **net health benefit** (`dqaly − dcost/wtp`) both come out negative, which is the same verdict stated two other ways — at this threshold the QALYs gained are not worth their cost. NMB and NHB are often more convenient than the ICER itself: they are well-behaved when an increment is near zero or negative (where the ICER ratio becomes uninterpretable), and they extend cleanly to more than two strategies. The ICER's sign and magnitude here are not a recommendation about this drug; they are a demonstration that the machinery now produces the decision-relevant quantity.
+Molecular screening costs a little more and buys meaningfully more health: catching some
+patients in `S1` and cutting their progression to deadly `S2` is worth far more in QALYs
+than it costs. The ICER lands around **\$860 per QALY** — an order of magnitude below the
+\$100,000 willingness-to-pay threshold in `inputs$wtp`. So molecular screening is clearly
+cost-effective, and from here it is our **standard of care**: the world we compare the
+cheaper field test *against*. That comparison is Model 8 — and it is where the trouble
+starts.
 
-::: {.callout-tip}
-## Why pair the seeds across arms
-Both arms share one engine, so seeding them identically is the discrete-event analogue of running the *same simulated patients* through both worlds — a paired comparison rather than two independent samples. The within-pair difference cancels the large between-patient variation, leaving a far tighter estimate of the increment. It is the single cheapest variance reduction available here, and it is why a modest `N` already gives a stable sign. Quote production-`N` estimates from a larger run; use this paired-seed pattern at any `N`.
-:::
-
-::: {.callout-note}
-## Treatment is held for the S1 stay — match every seize with a release
-The `treat` rows in the ledger number exactly as many as the `sick1` rows: a treated patient holds the slot for precisely each S1 episode and lets it go on recovery, progression, or termination. That one-to-one matching is what keeps the resource ledger honest — an unmatched `seize` would leak and silently inflate treatment cost. Hold this invariant in mind: in Model 8 the *same* `seize` becomes finite-capacity and blocking, and the way `simmer` enforces a queue there is exactly what breaks the model.
-:::
 
 # Part II — The contention problem
 
