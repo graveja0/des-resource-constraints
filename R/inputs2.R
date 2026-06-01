@@ -21,16 +21,10 @@ inputs <- modifyList(inputs, list(
 
   N = 1000,     # default for screening models; use 5000+ for production
 
-  # --- natural-history overrides for the cancer-screening context ------------
-  # The generic Sick-Sicker spine (models 1-6) keeps inputs.R's values; the
-  # screening arc overrides them to a cancer-realistic, program-cost-dominated
-  # structure. Disease-state costs are deliberately modest so the cost axis is
-  # set by the SCREENING PROGRAM, not by disease prevention (see header).
-  r.S1H  =   0.05,   # pre-clinical cancer rarely resolves spontaneously
-  hr.S2D =  60,      # advanced disease is deadly (~3-yr survival, not 20)
-  c.H    =      0,   # no disease-attributable cost while healthy
-  c.S1   =    300,   # pre-clinical disease is asymptomatic -> low cost
-  c.S2   =   1000,   # advanced disease: cheap palliative care (LMIC)
+  # NOTE: the natural-history and disease-state-cost parameters (r.S1H, hr.S2D,
+  # c.H, c.S1, c.S2, utilities, ...) are INHERITED from inputs.R unchanged, so
+  # models 1-6 and 7-11 share identical values. inputs2.R only ADDS the
+  # screening / treatment / queue parameters below.
 
   # --- one-time screen, staggered over a program rollout window --------------
   # Each patient is screened ONCE, at a time drawn ~Uniform(start, end). This
