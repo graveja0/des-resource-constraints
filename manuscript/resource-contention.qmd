@@ -991,361 +991,168 @@ cheaper field test *against*. That comparison is Model 8 — and it is where the
 starts.
 
 
-# Part II — The contention problem
+## Model 8 — the comparator: the field test
 
-## Model 8 — a finite resource, and the freeze trap
-
-> **Objective:** turn the treatment resource from an infinite-capacity counter into a *genuinely finite* one — only `n.capacity` patients can be treated at once — and watch the face validity of the whole model collapse. This is the fulcrum of the document: understanding *why* it breaks tells us exactly what Approaches A and B must preserve.
-
-Every model so far has treated `treat` the way it treats `healthy`, `sick1`, and `sick2`: a `capacity = Inf` counter, seized purely to integrate time-in-state for costing (model 7). Nobody ever waits for treatment, because there is always another slot. That is fine for a comparator that asks *"what if everyone who could benefit were treated?"* — but it is not the question a health system with three clinics and a thousand patients actually faces.
-
-So we make one small, natural-looking change. We give `treat` a real, finite capacity and let `simmer` do what it was built to do: queue the patients who cannot be served yet.
-
-::: {.callout-note appearance="minimal"}
-Model 8 swaps `inputs.R` for `inputs2.R`: `N = 20`, `strategy = "treat"`, and a new `n.capacity = 2`. In `des_run()` the treatment resource leaves the infinite `counters` list and is created with a hard cap instead:
+**Objective:** swap the comparator. Model 7 weighed molecular screening against doing
+nothing; the actual decision weighs the cheap **field test** against the molecular
+**standard of care**. Structurally this asks *nothing* new of the model. The field test
+is the same `screen` event with different numbers in `inputs`: lower coverage cost,
+higher coverage, lower sensitivity and specificity. We change a handful of parameters and
+re-run.
 
 ```r
-# THE DELTA (model 7 -> model 8): treat is no longer an Inf counter.
-# It is a real, capacity-limited resource with a FIFO queue.
-env |>
-  create_counters(counters) |>                  # healthy, sick1, sick2, death: still Inf
-  add_resource("treat", inputs$n.capacity) |>   # <- NEW: only 2 slots, the rest queue
-  add_generator("patient", traj, at(rep(0, inputs$N)), mon = 2) |>
-  run(inputs$horizon + 1/365) |>
-  wrap()
+# THE DELTA (inputs): the field test is the molecular test with different dials.
+cov.mol  = 0.12; sens.mol  = 0.95; spec.mol  = 0.95; c.screen.mol   = 1200   # standard of care
+cov.field= 0.50; sens.field= 0.70; spec.field= 0.70; c.screen.field =  100   # the challenger
 ```
 
-And the moment a patient becomes sick and is assigned to treatment, they `seize('treat')` — the ordinary, blocking `seize`. If both slots are taken, the patient blocks in the queue:
+Four forces now pull against each other, and the model's job is to net them out. The field
+test (1) reaches **four times** as many people but (2) **misses more** of the cancers it
+should catch (lower sensitivity) and (3) raises **far more false alarms** (lower
+specificity), while (4) costing a twelfth as much per test. Whether it is a good idea is
+not something you can read off any single number; it is the population-level integral of
+all four, which is exactly what the simulation computes.
 
-```r
-# THE OTHER HALF OF THE DELTA: a BLOCKING seize of the finite resource.
-sick1 <- function(traj, inputs)
-{
-  traj                      |>
-  set_attribute("State", 1) |> # 0 = H, 1 = S1, 2 = S2
-  release('healthy')        |>
-  seize('sick1')            |>
-  branch(
-    function() get_attribute(env, "Treat") + 1,
-    continue = rep(TRUE, 2),
-    trajectory(),                       # not assigned to treatment
-    trajectory() |> seize('treat')      # <- assigned: BLOCKS here if all slots are full
-  )
+### The result, ignoring capacity: the field test dominates
+
+We run both arms and difference them, paired on the same patients.
+
+```{r}
+#| label: model-8-cea
+source(here::here("R/model-8.R"), chdir = TRUE)   # same screen event; mol vs field is a parameter change
+
+run_arm <- function(strategy, N = 2000, seed = 7) {
+  des_run(modifyList(inputs, list(strategy = strategy, N = N)), seed = seed) |>
+    group_by(name) |>
+    summarise(cost = sum(dcost), qaly = sum(dqaly), .groups = "drop") |>
+    summarise(cost = mean(cost), qaly = mean(qaly))
 }
-```
-:::
 
-This is the car race with a single pit lane and two mechanics. Drivers who need a stop and find both mechanics busy must wait in line; only when a slot frees does the next driver in the queue get served. The Petri-net reading is just as clean: `treat` is now a place with a fixed token budget, and arcs that cannot fire pile their tokens up in front of the transition.
-
-![Two treatment slots, many patients: the ones who cannot be served wait in a queue.](../figures/congestion.png)
-
-### The queue is real
-
-Let us confirm the queue forms. We source model 8, run it once, and read the resource monitor for `treat`.
-
-```{r}
-#| label: model-8-queue
-set.seed(8)
-source(here::here("R/model-8.R"), chdir = TRUE)           # treat is now add_resource("treat", n.capacity = 2)
-invisible(capture.output(     # model 8 logs each wait; we silence the chatter here
-  arrivals <- des_run(inputs) # inputs2.R: N = 20, strategy = "treat", n.capacity = 2
-))
-
-# The treat resource now has a real server count and a real FIFO queue.
-treat <- get_mon_resources(env) |>
-  dplyr::filter(resource == "treat") |>
-  dplyr::select(time, server, queue) |>
-  dplyr::arrange(time)
-
-# The first moments the queue backs up behind the two slots:
-knitr::kable(
-  head(treat[treat$queue > 0, ], 6),
-  digits = 2,
-  col.names = c("Sim. time (yr)", "In treatment (cap = 2)", "Waiting in queue"),
-  caption = "The treat resource is now finite: both slots are full and patients queue."
-)
-```
-
-`server` never exceeds 2 — the cap is enforced exactly — and `queue` grows as more patients become sick than can be served (in this run it reaches 12). Mechanically, `simmer` is doing precisely what we asked. The contention is real and the FIFO discipline is exact. So far this looks like a triumph.
-
-### The face validity is broken
-
-It is not a triumph. To see why, ask the question any modeller should ask of a scarce-resource intervention: *does restricting treatment make patients worse off?* A health system with 2 slots instead of unlimited slots should see **more** disease progression and **more** deaths — sicker people are waiting, untreated, and the untreated die faster. That is the entire reason the contention matters.
-
-We test it directly. We count the distinct patients who reach the `death` counter, over 30 replicates each, under the unconstrained model 7 (treatment capacity `Inf`) and the constrained model 8 (capacity 2). Everything else is identical.
-
-```{r}
-#| label: model-8-deaths
-count_deaths <- function(arrivals)
-  length(unique(arrivals$name[arrivals$resource == "death"]))
-
-REPS <- 30; N <- 20
-
-# Unconstrained comparator: model 7's treat resource has capacity = Inf.
-source(here::here("R/model-7.R"), chdir = TRUE)
-inp_unconstrained <- modifyList(inputs, list(N = N, strategy = "treat"))
-set.seed(2026)
-deaths_unconstrained <- replicate(REPS, count_deaths(des_run(inp_unconstrained)))
-
-# Constrained: model 8, the SAME model but treat capacity = 2 (a blocking seize).
-source(here::here("R/model-8.R"), chdir = TRUE)
-inp_constrained <- modifyList(inputs, list(N = N, strategy = "treat", n.capacity = 2))
-set.seed(2026)
-invisible(capture.output(
-  deaths_constrained <- replicate(REPS, count_deaths(des_run(inp_constrained)))
-))
-
-tt <- t.test(deaths_constrained, deaths_unconstrained)
+mol   <- run_arm("mol")
+field <- run_arm("field")
+dcost <- field$cost - mol$cost
+dqaly <- field$qaly - mol$qaly
 
 knitr::kable(
   data.frame(
-    Scenario      = c("Unconstrained (capacity Inf, model 7)",
-                      "Constrained (capacity 2, model 8)"),
-    `Mean deaths` = c(mean(deaths_unconstrained), mean(deaths_constrained)),
-    check.names = FALSE
-  ),
-  digits = 2,
-  caption = sprintf(
-    "Mean deaths over %d replicates (N = %d). Constraining capacity LOWERS deaths by %.1f (p = %.1g) -- the wrong direction.",
-    REPS, N, mean(deaths_unconstrained) - mean(deaths_constrained), tt$p.value)
-)
+    Strategy = c("Molecular (SoC)", "Field test", "Incremental (field − mol)"),
+    Cost     = round(c(mol$cost, field$cost, dcost)),
+    QALYs    = round(c(mol$qaly, field$qaly, dqaly), 3)),
+  align = "lrr", format.args = list(big.mark = ","),
+  caption = "Field test vs molecular standard of care, no capacity constraint (N = 2000, paired seeds).")
 ```
 
-The mean death count *falls* — from about 6.3 to 3.2 — when we make treatment scarce, and the difference is not noise (p well below 0.001). Constraining the resource has **prevented** simulated deaths. That is exactly backwards.
-
-The cause is the blocking `seize`. Recall from model 1 that each patient's competing risks live in a hand-rolled next-event loop — death, progression, and recovery are sampled times that race via `next_event()`, and the loop advances them with `timeout()`. A blocking `seize('treat')` stops the *whole arrival* in the resource's queue. While a patient is parked there, their event loop does not turn: they cannot fire their death event, cannot progress to S2, cannot recover. The waiting room is, in effect, a stasis chamber. Scarcity did prevent a lot of simulated deaths — but only by destroying the simulated rate of death. The model has stopped being a model of disease for everyone in the queue.
-
-![A blocking `seize` freezes the token in the queue: the patient cannot fire death, progression, or recovery while waiting.](../figures/petri-token-queue.png)
-
-The two paradigms simply do not compose. `simmer`'s native blocking `seize` and our hand-rolled competing-risks clock are each correct in isolation; bolted together, the first silently freezes the second. No error is raised — the run completes, the queue looks immaculate, and the numbers are quietly, dangerously wrong. (This is the model-8 failure documented at length in the methodology note; the fix is the subject of the rest of this document.)
-
-### The shared invariant
-
-This failure hands us the single constraint that every correct contention design must honour. State it plainly, because Approaches A and B are nothing more than two different ways of obeying it.
-
-::: {.callout-important}
-## The shared invariant — the patient must never block
-
-A patient waiting for a contended resource **must remain in the hand-rolled event loop the entire time they wait.** Their disease has to keep progressing during the wait: death, progression to S2, and recovery must all stay live and able to fire while the patient is queued. The patient trajectory may **never** be parked in a blocking `seize`.
-
-Equivalently: the *wait* for a scarce slot is just one more competing risk, racing against death and progression — not a suspension of them. Any design that violates this freezes the patient and silently collapses the death rate, exactly as model 8 does.
-
-Approaches A and B both honour this invariant. **A** keeps the patient in the loop and converts congestion into an endogenous, occupancy-derived wait *event* — the patient never seizes the contended resource in a blocking way. **B** keeps the patient in the loop and hands the blocking `seize` to a disposable *companion* arrival that carries none of the patient's state, signalling back when a slot is won. Different machinery; the same non-negotiable rule.
-:::
-
-With the trap diagnosed and the invariant fixed, the natural next move is to reach for an obvious-looking patch — interrupt the queued patient with a signal, or clone them so one copy waits while the other lives on. The next section walks through four such patches and shows, for each, precisely how it violates the invariant or breaks in some other silent way, before we build the two designs that actually work.
-
-## A gallery of traps (why the tempting fixes fail)
-
-Model 8 left us with one non-negotiable rule: **the patient trajectory must never block, and the disease must keep racing during the wait.** That rule sounds easy to honour. It is not. Every fix that "obviously" works turns out to violate it — or some other invariant — in a way that is silent, intermittent, or only visible under adversarial probing. This gallery collects four of the most tempting wrong turns. Read each as a "spot the bug" exercise: the fix looks reasonable, the code compiles and runs, and it is still wrong. The two designs that *do* work (Approaches A and B, next part) are shaped precisely by the lessons here, so it pays to understand why each of these fails before seeing what replaces it.
-
-A word of caution before we start: the snippets below are deliberately **never executed**. Two of them come from files (`model11.R`, `model12.R`) that run heavy work the moment they are sourced — and one of those reliably crashes the R session. Everything in this section is `eval: false`. We read these; we do not run them.
-
-### Trap 1 — reneging off a global signal
-
-The first instinct after the freeze trap is: keep the blocking `seize()`, but give the patient an escape hatch. If the patient dies or progresses while queued, fire a signal and let `renege_if()` pull them out of the queue. Disease keeps racing (good), and the patient leaves the queue when something interrupts them (also good). The car-race picture: a driver waiting for the one free mechanic can be waved off the queue the moment their race ends.
-
-The bug is in the word *signal*. In `simmer`, `send()` is a **global broadcast** — it is not addressable to a single arrival. The escape hatch fires for *every* patient currently listening, not just the one whose event occurred. So the instant any one patient dies or progresses, **every** patient queued for treatment reneges at once.
+The incremental row is in the **southeast quadrant**: the field test is **cheaper *and*
+more effective** — it *dominates* the standard of care. The arithmetic is intuitive once
+you see which force wins. Reaching 50 % of people with a 70 %-sensitive test finds more
+true cancers in absolute terms than reaching 12 % with a 95 %-sensitive one
+(`0.50 × 0.70` against `0.12 × 0.95`), so more patients are caught in `S1` and steered off
+the road to deadly `S2` — that is the QALY gain. And because the test itself is so much
+cheaper at scale, the program costs *less* even after paying for the extra false-positive
+workups — that is the cost saving. On paper, the field test is an easy yes.
 
 ::: {.callout-warning}
-## Invariant violated: per-patient isolation (methodology.md §2–3)
-
-`send("died_or_progressed")` is a global broadcast; `renege_if()` on it fires for all waiters simultaneously. One patient's death empties the whole queue.
-
-```{r}
-#| label: trap-global-signal
-#| eval: false
-# From model11.R — become_sick(): the patient BLOCKS in seize() and tries to
-# escape via a renege signal.
-become_sick <- function(traj, inputs) {
-  traj %>%
-    set_attribute("State", 1) %>%
-    # Arm an escape hatch BEFORE blocking in the queue ...
-    renege_if(
-      "died_or_progressed",                      # <-- a GLOBAL signal name
-      out = trajectory() %>%
-        log_("Competing event occurred - leaving treatment queue")
-    ) %>%
-    seize("treatment_center", 1) %>%             # <-- still a BLOCKING seize
-    renege_abort() %>%
-    ...
-}
-
-# ... and death() broadcasts that same signal to EVERYONE:
-death <- function(traj, inputs) {
-  traj %>% branch(function() 1, continue = FALSE,
-    trajectory("Death") %>%
-      set_attribute("State", 3) %>%
-      send("died_or_progressed") %>%             # <-- GLOBAL: every waiter reneges
-      mark("death") %>%
-      terminate_simulation(inputs)
-  )
-}
-```
-
-Faking per-patient targeting by baking the id into the string
-(`paste0("patient", id, "_died")`) does not save it: an arrival **blocked in
-`seize()` ignores `trap()`/`wait()` entirely** (verified on simmer 4.4.7), and a
-single mismatched signal name is silently dropped. The queued patient cannot fire
-its own competing events, and the broadcast cannot reliably reach just that one
-patient.
+This conclusion has a load-bearing assumption buried in it: that *every* screen-positive
+is confirmed and treated **on demand**. The field test's whole problem is that it generates
+three to four times the referrals — and the confirmatory bottleneck downstream cannot
+absorb them. We have not modelled that yet. Models 9 onward do, and the easy yes does not
+survive it.
 :::
 
-### Trap 2 — clone the patient and synchronise the survivor
+## Common random numbers: making the difference visible
 
-The next idea is more ambitious, and on paper it is the *right* shape: split the patient into two parallel processes. Clone 1 goes and waits in the treatment queue (blocking is fine — it is a clone, not the real patient). Clone 2 stays in the event loop and lets the disease progress. Whichever finishes first wins; `synchronize()` keeps the survivor and discards the other. This is the `model12.R` approach, and it is the closest of the four traps to a genuine solution — which is exactly why its failure modes are worth dwelling on.
-
-The trouble is that clones are **distinct arrivals with independent seize ledgers**. They share attribute *values*, but each keeps its own private record of which resources it holds. A resource seized *before* the `clone()` can be released by only one of the children; when the second child tries to release the same tally, the server count underflows and `simmer` aborts mid-run — `'time_in_model' not previously seized`. Because both clones touch the shared state tallies (`healthy`/`sick1`/…), this fires on essentially every run, at an RNG-dependent moment, which is why it presents as "intermittent."
-
-There is no safe `synchronize()` setting. `wait = FALSE` lets the first finisher survive but **double-releases** the shared tallies (the crash above). `wait = TRUE` waits for *all* siblings to reach the sync point — but a sibling parked in `wait()` on a per-patient signal that never reliably fires **never arrives**, so the survivor hangs forever and experiences no further events. That is the deadlock: the "winner" is jettisoned into a state with no future. A discarded clone's still-held resources are not auto-transferred either, so they **leak** — the server count stays elevated and nobody can release them.
-
-::: {.callout-warning}
-## Invariant violated: single-redemption resource ledger + no leaks (methodology.md §2)
-
-Clones have independent seize ledgers. A pre-clone seize redeemed by both children double-releases and crashes; `synchronize(wait = TRUE)` deadlocks on a parked sibling; discarded clones leak their held resources.
+Before we go on, a word on *how* we read a difference this small. The incremental QALY
+above is around a quarter of a QALY per person — but the QALYs themselves are ~11.5, and
+they vary a lot from cohort to cohort because lifespan is stochastic. If we ran the two
+arms on **independent** random draws, that cohort-to-cohort noise would swamp the signal:
 
 ```{r}
-#| label: trap-clone-synchronize
-#| eval: false
-# From become-sick-cloned.R (sourced by model12.R) — the patient is split in two.
-become_sick <- function(traj, inputs) {
-  traj %>%
-    set_attribute("State", 1) %>%
-    release("healthy") %>%        # <-- a SHARED tally released BEFORE the clone
-    clone(
-      n = 2,
-      # Clone 1: go block in the real treatment queue
-      trajectory("Treatment Seeking") %>%
-        seize("treatment_center", 1) %>%
-        timeout(inputs$treatment_duration) %>%
-        release("treatment_center"),
-      # Clone 2: sit in the loop and wait for natural disease events
-      trajectory("Natural History") %>%
-        wait()                     # <-- parks on a signal that may never fire
-    ) %>%
-    # wait = FALSE -> first survivor, but the loser's release of the shared
-    #                 tallies underflows the server count -> CRASH.
-    # wait = TRUE  -> waits for the parked sibling that never arrives -> DEADLOCK.
-    synchronize(wait = FALSE, mon_all = FALSE) %>%
-    # The survivor must now re-seize its TRUE state resource by hand, because
-    # the clone machinery does not carry the held tallies across:
-    branch(function() get_attribute(env, "State") + 1, continue = rep(TRUE, 4),
-      trajectory() %>% seize("healthy"),
-      trajectory() %>% seize("sick"),
-      trajectory() %>% seize("sicker"),
-      trajectory()
-    )
+#| label: model-8-crn
+# Re-run the field-minus-molecular QALY difference across several independent cohorts,
+# once with common random numbers (paired patients) and once without.
+delta_q <- function(seed, crn_off = FALSE) {
+  CRN$force_disabled <- crn_off                    # toggle the per-patient banks
+  d <- run_arm("field", N = 1000, seed = seed)$qaly - run_arm("mol", N = 1000, seed = seed)$qaly
+  CRN$force_disabled <- FALSE
+  d
 }
+seeds <- c(1, 2, 3, 4, 5, 6, 7, 8) * 123457L       # widely spaced -> genuinely independent cohorts
+with_crn    <- sapply(seeds, delta_q, crn_off = FALSE)
+without_crn <- sapply(seeds, delta_q, crn_off = TRUE)
+data.frame(
+  Estimator = c("With CRN (paired)", "Without CRN (independent)"),
+  `Mean ΔQALY` = round(c(mean(with_crn), mean(without_crn)), 3),
+  `SD across cohorts` = round(c(sd(with_crn), sd(without_crn)), 3),
+  check.names = FALSE) |>
+  knitr::kable(caption = "The same difference, estimated 8 times. CRN roughly thirds the cohort noise.")
 ```
 
-There is a subtler footgun lurking even when it *seems* to run: `rollback(target, times)` counts **trajectory activity nodes**, not runtime events, and `clone`/`synchronize` add nodes that re-inject the survivor — silently shifting the integer target and breaking the loop's `times` counter. A nested clone test ignored `times = 3` and looped to the horizon ~5.77M times. This is why the working design (Approach B) keeps any clone strictly inside the `branch` wrapper and never lets a clone touch the shared state tallies.
+Without common random numbers the estimate wobbles by ~0.15 QALY from cohort to cohort —
+*larger than the signal itself*, so a single unlucky run could report no benefit, or the
+wrong sign. With CRN it wobbles by ~0.05. The trick is to give the two strategy arms the
+**same patients**: the same birth ages, the same disease-event times, the same
+screen-coverage and test-result draws — so the only thing that differs between the arms is
+the *decision*, and the difference is the decision's effect rather than luck.
+
+::: {.callout-note}
+## How the banks work (`R/crn.R`)
+`simmer` shares one global random stream across all arrivals, so the naive fix — `set.seed()`
+before each arm — desynchronises the moment one arm takes a branch the other does not.
+Instead, each patient draws from a **private bank** of uniforms, seeded deterministically
+from their own index, and every stochastic step consumes that bank by **inverse-CDF**:
+`qexp(u, rate)` in place of `rexp(1, rate)`, `u < p` in place of `runif(1) < p`. Because a
+patient's bank is fixed and private, the molecular and field arms hand patient *i* the
+exact same draws — patient *i*'s disease unfolds identically until the screening *decision*
+diverges. The shared helpers `draw_exp()` / `draw_unif()` fall back to plain `rexp`/`runif`
+when no bank is armed, so Models 1–6 are bit-for-bit unchanged; the screening models arm a
+bank per patient. (This adapts the per-event CRN streams of the RIPS-CVD microsimulation to
+`simmer`'s next-event engine. CRN aligns the two *strategies* within a model; it cannot
+align two different *models* — a fact that matters in Part IV.)
 :::
 
-### Trap 3 — fold the competing risks into one renege timer
+## Model 9 — an exogenous queue, and why it reassures falsely
 
-`simmer` permits only **one** active renege timer per arrival (a second call *overwrites* the first). So a clever response is to stop fighting that limit and embrace it: hand-fold all the competing risks — death, progression, recovery — into a single `min()` of sampled times, arm *that* as one renege timer, and race it against the blocking `seize()`. Whichever fires first wins. It is economical, it sidesteps the one-timer rule, and the disease genuinely keeps racing during the wait. This is Approach C.
+**Objective:** take the first, tempting step toward modelling the bottleneck — and watch
+it fail to capture the problem. We know confirmation is not instantaneous, so the obvious
+fix is to put a **wait** between a positive screen and treatment. The simplest wait is an
+**exogenous** one: a fixed delay drawn from a distribution we read off the current system —
+here a lognormal with a mean of about **18 weeks**, the wait observed under the
+(uncongested) molecular program today. During that wait the patient's disease keeps
+progressing; a true positive who slips from `S1` to `S2` before their confirmation arrives
+has missed the treatment window.
 
-It collapses under an audit of a single, easy-to-miss detail: **the treatment slot is acquired and never released.** As shipped, the renege path pulls the patient out, but the seize/release accounting is broken — adversarial testing logged 45 seizes against 0 releases at capacity 5. The slot fills once and then is held forever. That is not a turnover queue; it is "fill once, then starve." The reassuring "no leak" reading was hollow — the gauge was frozen — and the resource accounting came out 4.3× off.
-
-::: {.callout-warning}
-## Invariant violated: capacity must turn over (slots must be released) (methodology.md §4-C)
-
-Only one renege timer is allowed, so all risks fold into one `min()`. But the contended slot, once seized, is never released — capacity fills once and starves. A "no-leak" claim read clean only because the gauge never moved.
-
-```{r}
-#| label: trap-folded-renege
-#| eval: false
-# APPROACH C (illustrative): one renege timer = min() of all competing risks,
-# raced against a blocking seize of the finite slot.
-years_till_any_risk <- function(inputs) {
-  # Fold death + progression + recovery into a SINGLE soonest time, because
-  # simmer allows only one active renege timer (a 2nd would overwrite the 1st).
-  min(rexp(1, inputs$r.SD),     # death while sick
-      rexp(1, inputs$r.SS2),    # progress to sicker
-      rexp(1, inputs$r.SH))     # recover
-}
-
-seek_treatment_C <- function(traj, inputs) {
-  traj %>%
-    renege_in(
-      function() years_till_any_risk(inputs),   # the ONE folded timer
-      out = trajectory() %>%
-        log_("A competing risk fired first - leave the queue")
-    ) %>%
-    seize("treatment_center", 1) %>%            # blocking is OK here in theory
-    renege_abort() %>%
-    timeout(inputs$treatment_duration)
-    # BUG: no release("treatment_center") on the renege path AND the seize
-    #      ledger never turns the slot over -> 45 seize / 0 release at c = 5.
-    #      The cap "holds" only because nothing is ever given back.
-}
+```r
+# THE DELTA (model-9): a positive screen schedules a deferred 'Confirm' event.
+#   The wait is drawn from a FIXED distribution -- it does not know how many other
+#   patients are waiting. Disease keeps racing during the delay (death/progress/recover).
+set_attribute("tConfirm", function()
+  now(env) + qlnorm(draw_unif("confirm"), inputs$confirm_wait_logmean, inputs$confirm_wait_logsd))
 ```
 
-The lesson carried forward: a contention design must be audited for **turnover**, not just for "did we exceed the cap." A queue that fills and never drains passes a naive capacity check and is still completely wrong.
-:::
-
-### Trap 4 — keep your own slot calendar
-
-The last trap abandons `simmer`'s queue entirely. If `seize()` is what freezes the patient, then do the bookkeeping yourself: keep a small calendar of the `c` slots in plain R, book a slot when a patient starts treatment, free it when they finish, and read the calendar to decide whether a slot is available. No blocking, no clones, no signals — the patient stays in the event loop the whole time. This is Approach D, and it is genuinely free of the clone pathologies; it was the most promising of the four.
-
-It fails on a data-structure detail. Each slot is held as a **scalar** booking — one start/end pair per slot. But many patients chain through `slot_free` logic that overwrites that scalar, so a slot that is "booked" can be silently rebooked while still occupied. The capacity is **never actually enforced**: an adversarial run with a stated cap of 5 carried up to **11** concurrent treatments, and exceeded 5 for 54% of the timeline. Worse, the error points the *dangerous* way — it **understates** waits and **overstates** throughput, exactly the bias that would make a scarce-resource LMIC conclusion look rosier than reality.
-
-::: {.callout-warning}
-## Invariant violated: capacity-c cap must be enforced exactly (methodology.md §4-D)
-
-A scalar per-slot booking is overwritten by the next patient, so a slot holds only its latest reservation. The cap is not enforced — a "cap-5" calendar ran 11 concurrent treatments. The 4/4 "exactness" unit tests passed only because none exercised the failing case.
-
 ```{r}
-#| label: trap-slot-calendar
-#| eval: false
-# APPROACH D (illustrative): a hand-rolled slot calendar instead of simmer's queue.
-slot_calendar <- new.env()
-slot_calendar$free_at <- rep(0, inputs$treatment_capacity)  # one SCALAR per slot
-
-book_slot_D <- function(now_t, dur) {
-  # Find a slot that looks free and book it.
-  s <- which(slot_calendar$free_at <= now_t)[1]
-  if (is.na(s)) return(FALSE)                  # no slot -> patient waits
-  slot_calendar$free_at[s] <- now_t + dur      # <-- BUG: a scalar booking.
-  #   Two patients evaluating this in the same instant both see slot s "free"
-  #   and both overwrite free_at[s]; the second clobbers the first. The slot
-  #   now records ONE reservation but is physically holding TWO patients.
-  #   A "cap = 5" calendar drifts to 11 concurrent. The cap is decorative.
-  TRUE
-}
-```
-
-Salvageable — but only with a per-slot **booking ledger** (a list of every `[start, end]` interval the slot is actually committed to, checked for overlap), not a single overwritable scalar. The shape of the fix — book against a real ledger of held intervals, and check live occupancy before committing — is exactly what Approach A's fire-time free-slot guard and Approach B's real FIFO `seize()` queue provide for free.
-:::
-
-### What the gallery teaches
-
-Lay the four failures side by side and a checklist falls out — the same five properties Model 8 told us a faithful fix must satisfy, now each tied to the trap that violates it:
-
-```{r}
-#| label: traps-summary-table
-#| echo: false
+#| label: model-9-cea
+source(here::here("R/model-9.R"), chdir = TRUE)   # adds a deferred, fixed-distribution confirmation wait
+mol   <- run_arm("mol")
+field <- run_arm("field")
 knitr::kable(
   data.frame(
-    Attempt = c("Global-signal renege",
-                "Clone + synchronize",
-                "Folded renege (C)",
-                "Slot calendar (D)"),
-    `What breaks` = c("send() is global -> one event reneges every waiter",
-                      "independent seize ledgers -> double-release crash / wait=TRUE deadlock / leak",
-                      "the slot is seized but never released -> fill-once-then-starve",
-                      "scalar per-slot booking is overwritten -> cap not enforced (cap-5 ran 11)"),
-    `Invariant violated` = c("per-patient isolation",
-                            "single-redemption ledger / no leaks",
-                            "capacity must turn over",
-                            "capacity-c enforced exactly"),
-    check.names = FALSE
-  ),
-  caption = "Four tempting fixes and the exact invariant each one breaks."
-)
+    Strategy = c("Molecular (SoC)", "Field test", "Incremental (field − mol)"),
+    Cost     = round(c(mol$cost, field$cost, field$cost - mol$cost)),
+    QALYs    = round(c(mol$qaly, field$qaly, field$qaly - mol$qaly), 3)),
+  align = "lrr", format.args = list(big.mark = ","),
+  caption = "Field vs molecular with an EXOGENOUS 18-week confirmation wait (N = 2000, paired seeds).")
 ```
 
-Every working design must therefore, all at once: keep the patient **unblocked** while the disease races, target interruptions **per patient** rather than broadcasting them, never let two arrivals share a redeemable resource ledger, **turn slots over** (seize *and* release), and enforce the capacity-`c` cap **exactly**. The two designs in the next part are not clever for their own sake — they are the two distinct ways found to satisfy all five constraints simultaneously. Approach A keeps everything in the event loop and reads live occupancy to derive the wait; Approach B decouples the queue into a disposable claim-ticket companion. With the traps mapped, each will read less like a trick and more like the only shape that fits.
+The verdict barely moves: the field test is still firmly in the southeast quadrant,
+cheaper and more effective. This is **false reassurance**, and the reason is structural,
+not numerical. An exogenous wait is the *same fixed distribution for both arms* — it does
+not know that the field test sends three to four times as many people into the queue. It
+charges the molecular-era wait to a program that would, in reality, generate a far longer
+one. A delay that does not respond to load cannot capture a bottleneck, because a
+bottleneck *is* the response to load. To see the problem we have to let the wait be set by
+the queue itself — to make it **endogenous**. That is the finite resource Part I kept
+promising, and it is where DES finally earns its keep.
+
 
 # Part III — Two designs that work
 
