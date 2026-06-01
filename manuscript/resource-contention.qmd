@@ -1469,7 +1469,7 @@ quadrant boundary — and the two faithful ways to model it.
 
 # Appendix — `simmer` semantics that matter {.appendix}
 
-**Objective:** collect, in one place, the verified `simmer` 4.4.7 facts that this document leans on — the ones that make the traps in Part II fail and the two designs in Part III work. The gallery of traps explained *why* each fix breaks in narrative form; this appendix is the **reference card** you can return to. Every row was checked empirically against the actual code (the probe scripts under `drafts/`, re-run by an adversarial verifier) and is documented at greater length in [`methodology.md`](methodology.md) §2–3. Nothing here is folklore; where a claim sounds surprising, it is because the obvious reading is wrong.
+**Objective:** collect, in one place, the verified `simmer` 4.4.7 facts that the two designs in Part III rest on — the ones that force the shared invariant (never block the patient) and that make Approach A robust and Approach B both powerful and fragile. This appendix is the **reference card** you can return to. Every row was checked empirically against the actual code (`validation/`), and is documented at greater length in [`methodology.md`](methodology.md) §2–3. Nothing here is folklore; where a claim sounds surprising, it is because the obvious reading is wrong.
 
 ## The load-bearing facts, one table
 
@@ -1501,14 +1501,14 @@ knitr::kable(
       "**callable mid-trajectory and inside a `time_to_event` sampler**; they read *live* occupancy of a real resource"
     ),
     `Consequence for us` = c(
-      "the core incompatibility — **never block the patient arrival** (Model 8's freeze)",
+      "the core incompatibility — **never block the patient arrival** (the shared invariant of Part III)",
       "a queued patient cannot fire its own competing events; per-patient targeting must be string-encoded and is read only once *unblocked*",
-      "per-patient signals are faked by baking the id into the name (B's `acq_<pid>` / `abandon_<pid>`); a single mismatch is silently dropped (Trap 1)",
-      "the **only** lever that can pull an arrival out of a queue — B's companion uses it to abandon; set `keep_seized` deliberately (Trap 3's missing release)",
-      "a pre-clone seize redeemed by both children **double-releases** and aborts the run (Trap 2)",
-      "B relies on `wait = FALSE` so the self-clone survives; `wait = TRUE` **deadlocks** on a parked sibling (Trap 2)",
-      "if clones are present, integer targets shift — use **tag-named** targets or a `check=` predicate (Trap 2's ~5.77M-iteration runaway)",
-      "this is what makes **Approach A possible**: an endogenous wait with **no blocking** (`years_till_treatmentA` reads `get_server_count` vs `get_capacity`)"
+      "per-patient signals are faked by baking the id into the name (B's `acq_<pid>` / `abandon_<pid>`); a single mismatch is silently dropped",
+      "the **only** lever that can pull an arrival out of a queue — B's companion uses it to abandon when the patient leaves S1",
+      "a pre-clone seize redeemed by both children **double-releases** and aborts the run — so B's companion holds no tally",
+      "B relies on `wait = FALSE` so the self-clone survives; `wait = TRUE` **deadlocks** on a parked sibling",
+      "if clones are present, integer targets shift — use **tag-named** targets or a `check=` predicate (a runaway otherwise)",
+      "this is what makes **Approach A possible**: an endogenous wait with **no blocking** (`years_till_confirm` reads `get_server_count` vs `get_capacity`)"
     ),
     check.names = FALSE
   ),
@@ -1516,7 +1516,7 @@ knitr::kable(
 )
 ```
 
-A reader who internalises only this table can reconstruct the rest. The traps are exactly the designs that assumed one of rows 1–6 behaved *intuitively* instead of as written; A and B are exactly the designs that took rows 5–8 at face value and routed around rows 1–4.
+A reader who internalises only this table can reconstruct the rest. The tempting fixes that *don't* work are exactly the ones that assume one of rows 1–6 behaves *intuitively* instead of as written; A and B are exactly the designs that take rows 5–8 at face value and route around rows 1–4.
 
 ## Three facts worth restating in prose
 
@@ -1525,24 +1525,24 @@ A few of these are subtle enough that the one-line table cell undersells them. E
 ::: {.callout-important}
 ## `send()` is global; a queued arrival is deaf to it anyway
 
-These two facts compound. First, there is **no per-arrival signal channel** in `simmer` — `send("x")` wakes *every* arrival currently in `trap("x")` / `wait()`. The only way to address one patient is to encode the patient id into the signal *string* (`paste0("acq_", pid)`), and a typo or attribute mismatch in that string is dropped without any error. Second, and worse for the naive fix, an arrival that is **blocked inside `seize()` does not process `trap()`/`wait()` at all** — the signal machinery is suspended for the duration of the block. So the one patient you most want to reach (the one stuck in the queue) is precisely the one a broadcast cannot wake. This is why Trap 1 cannot be rescued by better signal naming, and why Approach B never lets the *patient* block: only the disposable companion sits in the `seize` queue, and it is reachable via `renege_if`, not `trap`.
+These two facts compound. First, there is **no per-arrival signal channel** in `simmer` — `send("x")` wakes *every* arrival currently in `trap("x")` / `wait()`. The only way to address one patient is to encode the patient id into the signal *string* (`paste0("acq_", pid)`), and a typo or attribute mismatch in that string is dropped without any error. Second, and worse for the naive fix, an arrival that is **blocked inside `seize()` does not process `trap()`/`wait()` at all** — the signal machinery is suspended for the duration of the block. So the one patient you most want to reach (the one stuck in the queue) is precisely the one a broadcast cannot wake. This is why Approach B never lets the *patient* block: only the disposable companion sits in the `seize` queue, and it is reachable via `renege_if`, not `trap`.
 :::
 
 ::: {.callout-important}
 ## Clones carry attribute *values*, not the seize *ledger*
 
-`clone()` is not a deep copy of process state. The children share a snapshot of attribute values, but each maintains its **own, private record of which resources it currently holds**. A resource seized *before* the `clone()` therefore sits in an ambiguous place: each child believes it can release it, but the underlying server count can only be decremented once. The second release underflows the count and `simmer` aborts mid-run (`'<resource>' not previously seized`). Because the offending release happens at an RNG-dependent moment, the crash looks *intermittent* — the most expensive kind of bug to chase. The discipline that follows (and that Approach B obeys): **never seize a shared tally on the patient before cloning, and never let a clone touch the state counters at all.** B's companion touches only the contended `treatment` resource; the patient touches only its tallies. The clone boundary is also a resource boundary, so no ledger is ever redeemed twice.
+`clone()` is not a deep copy of process state. The children share a snapshot of attribute values, but each maintains its **own, private record of which resources it currently holds**. A resource seized *before* the `clone()` therefore sits in an ambiguous place: each child believes it can release it, but the underlying server count can only be decremented once. The second release underflows the count and `simmer` aborts mid-run (`'<resource>' not previously seized`). Because the offending release happens at an RNG-dependent moment, the crash looks *intermittent* — the most expensive kind of bug to chase. The discipline that follows (and that Approach B obeys): **never seize a shared tally on the patient before cloning, and never let a clone touch the state counters at all.** B's companion touches only the contended `confirm` resource; the patient touches only its tallies. The clone boundary is also a resource boundary, so no ledger is ever redeemed twice.
 :::
 
 ::: {.callout-important}
 ## Live occupancy is readable from inside a `time_to_event` sampler
 
-This is the single permissive fact the whole of Approach A turns on, and it is easy to assume is forbidden. A `time_to_event` function in the event registry is just an R closure evaluated when the engine reschedules; nothing stops it from calling `get_server_count(env, "A")` and `get_capacity(env, "A")` on a *real* finite resource. So congestion can be read at sampling time and converted directly into a wait — longer when more slots are busy and more patients sit ahead in the FIFO position — with the patient never entering a blocking `seize`. The cap is then enforced *separately*, at fire time, by a guard that performs the real `seize` only when `get_server_count < get_capacity`. The wait is an analytic M/M/c-flavoured approximation (correct mean under saturation); the capacity is exact. Rows 1–2 forbid blocking the patient; row 8 is what lets you avoid it without abandoning a real resource.
+This is the single permissive fact the whole of Approach A turns on, and it is easy to assume is forbidden. A `time_to_event` function in the event registry is just an R closure evaluated when the engine reschedules; nothing stops it from calling `get_server_count(env, "confirm")` and `get_capacity(env, "confirm")` on a *real* finite resource. So congestion can be read at sampling time and converted directly into a wait — longer when more slots are busy and more patients sit ahead in the FIFO position — with the patient never entering a blocking `seize`. The cap is then enforced *separately*, at fire time, by a guard that performs the real `seize` only when `get_server_count < get_capacity`. The wait is an analytic M/M/c-flavoured approximation (correct mean under saturation); the capacity is exact. Rows 1–2 forbid blocking the patient; row 8 is what lets you avoid it without abandoning a real resource.
 :::
 
 ## Where each fact is exercised
 
-To close the loop between this reference and the code, the table below points each fact at the specific design decision it underwrites — so a future maintainer touching `model-A.R` or `model-B.R` knows which invariant they are standing on.
+To close the loop between this reference and the code, the table below points each fact at the specific design decision it underwrites — so a future maintainer touching `model10.R` (A) or `model11.R` (B) knows which invariant they are standing on.
 
 ```{r}
 #| label: appendix-where-exercised
@@ -1562,15 +1562,48 @@ knitr::kable(
       "the **shared invariant** — both A and B keep the patient out of every blocking seize",
       "**B**'s per-patient `sig_acq` / `sig_abandon` string-encoded signals (the companion, not the patient, listens)",
       "**B**'s abandonment: leaving S1 sends `abandon_<pid>`; a still-queued companion reneges out",
-      "**A**'s `years_till_treatmentA()` and its fire-time free-slot guard — capacity exact, no blocking",
-      "the **avoidance rule**: A uses no clones at all; B's companion touches only `treatment`, never a tally",
+      "**A**'s `years_till_confirm()` and its fire-time free-slot guard — capacity exact, no blocking",
+      "the **avoidance rule**: A uses no clones at all; B's companion touches only `confirm`, never a tally",
       "**B**'s `clone(n = 2, self, companion) |> synchronize(wait = FALSE)` — the self-clone re-enters the loop",
       "**B**'s clone machinery is kept strictly inside the `branch` wrapper so loop targets do not shift"
     ),
     check.names = FALSE
   ),
-  caption = "Each verified fact, mapped to the design decision it underwrites in model-A.R / model-B.R."
+  caption = "Each verified fact, mapped to the design decision it underwrites in model10 (A) / model11 (B)."
 )
 ```
 
 The pattern is worth naming. **Approach A's robustness comes from using only the permissive facts** (rows 7–8 of the first table) and the one prohibition that costs nothing (don't block the patient) — it never touches `clone`, `synchronize`, `send`, or `trap`, so none of the fragility in rows 5–6 can reach it. **Approach B is more powerful and more fragile because it uses all eight facts at once**: it accepts the blocking `seize` (row 1) but quarantines it inside a disposable companion, then threads `renege`, `send`/`trap`, `clone`, and `synchronize` together so that every one of their sharp edges (rows 2–6) is pointed away from the patient's state. That is the whole tradeoff of Part IV, reduced to which rows of this table each design chooses to depend on.
+
+## Common random numbers: the design, and its one hard limit
+
+The variance-reduction substrate (`R/crn.R`) deserves its own note, because it has a sharp
+boundary that is easy to cross by accident.
+
+**The design.** `simmer` runs every arrival off one global RNG stream, so the textbook CRN
+move — `set.seed()` before each arm — desynchronises the instant one arm takes a branch the
+other does not. Instead, each patient owns a **private bank** of uniforms, drawn once from a
+deterministic per-patient seed, and every stochastic step consumes the bank by inverse-CDF
+(`qexp(u, rate)` for `rexp`, `u < p` for `runif`). Because the bank is private and fixed,
+two *strategies* hand patient *i* identical draws; patient *i*'s disease is bit-for-bit the
+same in both arms until the screening *decision* diverges, so the paired difference is the
+decision's effect with the cohort noise differenced away. The helpers `draw_exp()` /
+`draw_unif()` fall back to plain `rexp` / `runif` when no bank is armed, which is why Models
+1–6 are unchanged to the last digit.
+
+**The hard limit.** CRN aligns two *strategies within one model*. It **cannot** align two
+*different models* — Approach A and Approach B inject different confirm-handling events into
+the loop, so the reactive resample consumes each patient's disease bank at a different
+*cadence*, and the same seed yields different draws. A shared-seed A-vs-B comparison
+therefore measures that cadence artifact, not the models; we even see A ≠ B under a
+*null-effect* run, where the queue is inert. So A-vs-B agreement must be established by
+**independent replication** (Part IV), not by CRN — a subtle but load-bearing distinction
+when the two models are being compared head-to-head.
+
+::: {.callout-tip}
+## A practical gotcha in the banks
+The per-patient seed is `CRN$seed + patient_index`, so two runs whose seeds differ by less
+than the cohort size draw **overlapping** banks — their "independent" cohorts are nearly
+identical. For genuinely independent replications (e.g. the variance demo in Model 8, or the
+A-vs-B harness), space the run seeds widely (`seed * 123457`), not by consecutive integers.
+:::
