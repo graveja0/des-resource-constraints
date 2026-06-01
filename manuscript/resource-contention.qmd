@@ -352,7 +352,7 @@ Each clinical event lives in its own small file that defines two functions: a `t
 #| label: model-3-run
 set.seed(3)
 source(here::here("R/model-3.R"), chdir = TRUE)                         # adds Death to the event registry
-arrivals <- des_run(modifyList(inputs, list(N = 1000)))
+arrivals <- des_run(modifyList(inputs, list(N = 2000)))
 
 # A "death" row now appears in the ledger, alongside time_in_model:
 arrivals |> count(resource)
@@ -518,11 +518,11 @@ Sourcing `model-4.R` re-`source()`s the inputs and the engine, then redefines `d
 #| label: model-4-run
 set.seed(8)
 source(here::here("R/model-4.R"), chdir = TRUE)   # adds the State attribute, the reactive Sick1 event, and per-state cost/QALY
-arrivals <- des_run(modifyList(inputs, list(N = 200)))
+arrivals <- des_run(modifyList(inputs, list(N = 2000)))
 arrivals |>
   count(resource) |>
   knitr::kable(col.names = c("resource (state tally)", "rows"),
-               caption = "One row per state occupied: 200 patients, 190 fell sick, 65 died before the horizon.")
+               caption = "One row per state occupied: 2,000 patients, 1,916 fell sick, 612 died before the horizon.")
 ```
 
 ### The random-audit idiom
@@ -540,13 +540,13 @@ arrivals |>
   knitr::kable(digits = 2, caption = paste("Audited life story:", one))
 ```
 
-Read it as a sentence. `patient191` is healthy from year 0 to year **7.1** (one `healthy` row, costing `c.H` × 7.1 = 0 — healthy carries no disease-attributable cost in this calibration — while accruing 7.10 QALYs at `u.H` = 1.0). Onset of S1 fires at 7.1; from there to year **26.7** they are sick (one `sick1` row, billed at `c.S1` = 300 over 19.6 years ≈ 5,883, accruing 19.6 × `u.S1` = 15.69 QALYs). At **26.7** the (tripled, post-onset) death hazard finally wins, before the 30-year horizon. The `time_in_model` row spans the whole life, 0 to 26.7 — a free cross-check that the state rows tile the lifetime with no gaps and no overlap.
+Read it as a sentence. The audited patient is healthy from year 0 to year **14.1** (one `healthy` row, costing `c.H` × 14.1 = 0 — healthy carries no disease-attributable cost in this calibration — while accruing 14.13 QALYs at `u.H` = 1.0). Onset of S1 fires at 14.1; from there to year **22.5** they are sick (one `sick1` row, billed at `c.S1` = 300 over 8.4 years ≈ 2,517, accruing 8.4 × `u.S1` = 6.71 QALYs). At **22.5** the (tripled, post-onset) death hazard wins, before the 30-year horizon. The `time_in_model` row spans the whole life, 0 to 22.5 — a free cross-check that the state rows tile the lifetime with no gaps and no overlap.
 
 Three things to verify on every audit, all of which hold here:
 
 - **Chronology is contiguous.** Each state's `end_time` is the next state's `start_time`; there are no gaps (uncounted time) and no overlaps (double-counted time). The `time_in_model` span equals the lifetime.
 - **The state sequence is legal.** `healthy → sick1 → death` is a path the registry actually permits. A patient showing `sick1` *before* `healthy`, or a `cost` on a `death`/`time_in_model` row, would betray a wiring bug.
-- **The per-state bills match the parameters.** A `sick1` row at `c.S1` not `c.H`; a QALY equal to duration × the right utility weight. Here the S1 QALYs (15.69) are visibly less than the S1 duration (19.6 years) — exactly the `u.S1` = 0.80 penalty for being sick.
+- **The per-state bills match the parameters.** A `sick1` row at `c.S1` not `c.H`; a QALY equal to duration × the right utility weight. Here the S1 QALYs (6.71) are visibly less than the S1 duration (8.4 years) — exactly the `u.S1` = 0.80 penalty for being sick.
 
 ::: {.callout-tip}
 The `arrange(start_time, end_time)` tie-break is why `time_in_model` (which also starts at 0) sorts *after* `healthy`: both begin at time 0, and the tie is broken by `end_time`. Sorting on the start time alone leaves zero-width events (`death`, fired at a single instant) and equal-start rows in an arbitrary order — sort on both, and the timeline reads cleanly every time.
@@ -644,7 +644,7 @@ one healthy spell.
 #| label: model-5-run
 set.seed(8)
 source(here::here("R/model-5.R"), chdir = TRUE)   # re-sources inputs.R + main_loop.R, redefines des_run; adds the Healthy event
-arrivals <- des_run(modifyList(inputs, list(N = 200)))
+arrivals <- des_run(modifyList(inputs, list(N = 2000)))
 
 # A patient who recovers visits the 'healthy' counter more than once.
 # Pick one with exactly three healthy spells: enough bounces to see the loop,
@@ -669,9 +669,8 @@ arrivals |>
 ```
 
 Read the `state` column top to bottom: it **alternates** between `H` and `S1` several times — the recovery
-loop firing. This patient is healthy for the first several years, endures a long sick spell (recovery is
-slow, so S1 stays are long in this calibration), then recovers, relapses briefly, and recovers again before
-the horizon. The contiguous `start`/`end` times confirm the costing token is being handed off cleanly at
+loop firing. This patient is healthy at first, endures a long sick spell (recovery is slow, so S1 stays are
+long in this calibration), then recovers, relapses, and recovers again before the horizon. The contiguous `start`/`end` times confirm the costing token is being handed off cleanly at
 each transition — `release('sick1')` exactly when `seize('healthy')` happens, so no overlap and no gap, and
 the per-state cost and QALY selectors from Model 4 will bill each spell at the right rate with no further
 change. The loop closes; the patient genuinely moves both ways.
@@ -681,8 +680,9 @@ change. The loop closes; the patient genuinely moves both ways.
 Recurrence is also a good moment to glance at the population, not just one patient. Here recovery
 (`r.S1H = 0.05`/yr) is *slower* than onset (`r.HS1 = 0.15`/yr) — a deliberate choice for the cancer
 context, where pre-clinical disease rarely resolves — so patients accumulate in S1: across the cohort,
-more person-time is spent sick than healthy (here ≈ 3,085 S1-years vs ≈ 2,120 H-years). What the audit
-confirms is that the recovery arc nonetheless *fires* — roughly half the cohort returns to H at least once.
+more person-time is spent sick than healthy (here ≈ 30,500 S1-years vs ≈ 21,100 H-years across the cohort —
+roughly half again as much time sick as well). What the audit confirms is that the recovery arc nonetheless
+*fires* — well over half the cohort (here ~1,150 of 2,000) returns to H at least once.
 The tell-tale bug would be the opposite: *no* patient ever leaving S1, the sign of a mis-gated
 `time_to_event` (recovery left permanently disabled). That most S1 patients now progress rather than
 recover is exactly what motivates the screening question in Part II.
@@ -724,7 +724,7 @@ Sourcing `model-6.R` cleanly replaces the Model 5 definitions. The visible payof
 #| label: model-6-run
 set.seed(6)
 source(here::here("R/model-6.R"), chdir = TRUE)   # the full ladder: adds the Sicker (S2) state
-arrivals <- des_run(modifyList(inputs, list(N = 200)))
+arrivals <- des_run(modifyList(inputs, list(N = 2000)))
 
 # The ledger now carries a fifth state-resource, 'sick2':
 sort(unique(arrivals$resource))
@@ -791,7 +791,7 @@ The random-audit idiom from Model 4 transfers unchanged — sample one patient, 
 # Re-run under the SAME seed so the audit lands on a known patient.
 set.seed(6)
 source(here::here("R/model-6.R"), chdir = TRUE)
-arrivals <- des_run(modifyList(inputs, list(N = 200)))
+arrivals <- des_run(modifyList(inputs, list(N = 2000)))
 
 # Pick one patient who climbed all the way to S2, then read their history in order.
 set.seed(11)
@@ -811,7 +811,7 @@ arrivals |>
   knitr::kable(caption = paste("State history for", who))
 ```
 
-Read top to bottom, this is the whole curriculum so far in one patient: `H → S1 → S2 → death`. The patient is healthy briefly, spends a few years in S1, then progresses to `S2` — and, with no recovery arc out of S2 and a sixtyfold death hazard, dies within a few years of reaching it, long before the 30-year horizon. The `sick2` row (billed at `c.S2 = 1000`/year) is short but it is where the lost life-years concentrate: advanced disease here is cheap to *manage* but expensive in *health*. It is exactly this cohort — the patients who progress to deadly S2 because they were never treated early — that the screening question in Part II is about reaching in time.
+Read top to bottom, this is the whole curriculum so far in one patient: `H → S1 → S2 → death`. The patient is healthy at first, passes through S1, then progresses to `S2` — and, with no recovery arc out of S2 and a sixtyfold death hazard, dies within a couple of years of reaching it, long before the 30-year horizon. The `sick2` row (billed at `c.S2 = 1000`/year) is short but it is where the lost life-years concentrate: advanced disease here is cheap to *manage* but expensive in *health*. It is exactly this cohort — the patients who progress to deadly S2 because they were never treated early — that the screening question in Part II is about reaching in time.
 
 ::: {.callout-note}
 ## Why this is the last "add a state" section
@@ -1072,7 +1072,7 @@ arms on **independent** random draws, that cohort-to-cohort noise would swamp th
 # once with common random numbers (paired patients) and once without.
 delta_q <- function(seed, crn_off = FALSE) {
   CRN$force_disabled <- crn_off                    # toggle the per-patient banks
-  d <- run_arm("field", N = 1000, seed = seed)$qaly - run_arm("mol", N = 1000, seed = seed)$qaly
+  d <- run_arm("field", N = 2000, seed = seed)$qaly - run_arm("mol", N = 2000, seed = seed)$qaly
   CRN$force_disabled <- FALSE
   d
 }
