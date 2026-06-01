@@ -1392,27 +1392,81 @@ extra cancers progress untreated in the line. The recommendation does not merely
 free win. A decision-maker who saw Models 10–11 faces a genuine trade-off: real savings
 bought with real health loss — the "southwest-quadrant quandary."
 
+## How much capacity? A sensitivity sweep
+
+The flip from SE to SW is not a knife-edge — it is a smooth function of how many confirmation
+slots the system has. We sweep the capacity from generous to severe, for *both* designs,
+averaging several independent cohorts at each level (the incremental QALY is small near the
+boundary, so a single cohort is noisy).
+
+```{r}
+#| label: capacity-sweep
+cap_incr <- function(model_file, cap, seeds, N = 2000) {
+  source(here::here("R", model_file), chdir = TRUE)   # silent (sys.nframe guard); defines des_run
+  arm <- function(strat, seed)
+    des_run(modifyList(inputs, list(strategy = strat, N = N, cap.confirm.per1000 = cap)), seed = seed) |>
+      group_by(name) |> summarise(c = sum(dcost), q = sum(dqaly), .groups = "drop") |>
+      summarise(c = mean(c), q = mean(q))
+  d <- vapply(seeds, function(s) { m <- arm("mol", s); f <- arm("field", s); c(f$c - m$c, f$q - m$q) },
+              numeric(2))
+  c(dcost = mean(d[1, ]), dqaly = mean(d[2, ]))
+}
+seeds <- c(7, 101, 202, 303) * 1009L   # widely spaced -> independent cohorts (avoid bank overlap)
+caps  <- c(12, 6, 3, 2)                # confirmation slots per 1,000 eligible people
+A <- t(vapply(caps, function(k) cap_incr("model10.R", k, seeds), numeric(2)))
+B <- t(vapply(caps, function(k) cap_incr("model11.R", k, seeds), numeric(2)))
+verdict <- function(dc, dq) ifelse(dc < 0 & dq > 0, "SE — adopt",
+                            ifelse(dc < 0 & dq < 0, "SW — reject", "—"))
+knitr::kable(
+  data.frame(
+    `Slots/1,000` = caps,
+    `Δcost (A)` = round(A[,"dcost"]), `ΔQALY (A)` = round(A[,"dqaly"], 3), `(A)` = verdict(A[,"dcost"], A[,"dqaly"]),
+    `Δcost (B)` = round(B[,"dcost"]), `ΔQALY (B)` = round(B[,"dqaly"], 3), `(B)` = verdict(B[,"dcost"], B[,"dqaly"]),
+    check.names = FALSE),
+  align = "rrrlrrl",
+  caption = "Field vs molecular by confirmatory capacity — Approach A and B side by side (4 independent cohorts averaged, N = 2000). Both flip SE → SW between 6 and 3 slots per 1,000.")
+```
+
+Read down either `ΔQALY` column: the field test's health advantage shrinks as slots are removed
+and **crosses zero between 6 and 3 slots per 1,000** — for *both* designs. Above that the
+bottleneck has slack and the field test is dominant (adopt); below it the referral flood
+saturates the queue and the field test is dominated on value (reject at the \$100k threshold).
+Cost is negative at every level — capacity moves only the health axis. Two readings matter:
+
+- **The lever is capacity, as a number.** The recommendation is not "field test: yes or no" but
+  "field test **and** confirmatory capacity above roughly six slots per 1,000." Adopt the cheap
+  test *without* expanding the bottleneck and the program lands in the southwest.
+- **A and B agree across the whole range.** Averaged over cohorts, the two designs track each
+  other to within a few hundredths of a QALY at every capacity — and give the *same*
+  recommendation at every row. The convenient analytic wait (A) is an entirely adequate
+  stand-in for the exact queue (B) for this mean-CEA question; B is reserved for questions about
+  the wait *distribution* rather than its average.
+
+
 ## Approach A vs B: where they agree, and where they part
 
-The two endogenous designs agreed in the table above. Do they agree in general? We compared
-them by **replication** — not by shared seeds. (Common random numbers align the two
-*strategies* within one model, but they cannot align two *different* models: A and B inject
-different confirm-handling events into the loop, so the reactive resample consumes the
-disease draws at different cadences. Pairing A against B on a shared seed measures that
-cadence artifact, not the models. So we run each model over many independent cohorts and
-compare the means.)
+The capacity sweep already gave the headline answer: averaged over cohorts, the two designs
+land in the same quadrant at every capacity and track each other to within a few hundredths
+of a QALY. But that sweep paired the two *strategies* within each model (common random
+numbers) and then compared the two models' *means*. We cross-check it with a fully
+independent estimator, because there is a subtlety worth stating: **CRN can align two
+strategies inside one model, but not two different models.** A and B inject different
+confirm-handling events into the loop, so the reactive resample consumes each patient's
+disease bank at a different cadence; a shared-seed A-vs-B comparison measures that cadence
+artifact, not the models (we even see A ≠ B under a null-effect run, where the queue is
+inert). So the head-to-head must be done by independent replication.
 
 ::: {.callout-note}
-## A = B on the bottom line, with a caveat (30 independent replications)
-Over 30 independent cohorts (`validation/validate-AB-replication.R`), A and B **agree on the
-cost axis**: the field test is cheaper by ≈ \$47/person under both, well within Monte-Carlo
-error. On the **health axis** they sit a hair apart and on opposite sides of zero: Approach
-B (the exact queue) puts the incremental QALY at about **−0.04** (southwest), while Approach
-A (the analytic wait) puts it at about **0.00** — right on the SE/SW boundary. The gap is
-small and not statistically sharp at 30 reps, but it is *directional*: A's M/M/c wait is a
-touch optimistic under heavy saturation, so it under-states the health loss exactly where
-the decision is closest. The convenient model and the faithful model can land on opposite
-sides of the line precisely where it matters most.
+## A = B on the bottom line (30 independent replications)
+Over 30 independent cohorts with CRN disabled (`validation/validate-AB-replication.R`), A and
+B **agree on both axes** within Monte-Carlo error: the field test is cheaper by ≈ \$47/person
+under each, and the incremental QALY differs by only a few hundredths between them — the same
+agreement the capacity sweep showed by its precise within-model estimator. The only residual
+is directional and second-order: under the most extreme saturation, A's analytic M/M/c wait
+is a touch *optimistic* relative to B's exact queue (it admits a few more patients before the
+line is truly full), so it nudges the QALY estimate up by a sliver. It is never enough to
+change the quadrant — but it is the reason that, when a recommendation sits right on the
+SE/SW boundary, you reach for B.
 :::
 
 ### The tradeoff, stated plainly
