@@ -439,21 +439,25 @@ summarise_run <- function(r) {
   data.frame(dcost = sum(r$dcost) / n, dqaly = sum(r$dqaly) / n)
 }
 
-run_mol   <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),   seed = 42L)
-run_field <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'field')), seed = 42L)
+# Experiment block runs only when this file is executed directly (Rscript),
+# not when source()d into the manuscript or a harness.
+if (sys.nframe() == 0L) {
+  run_mol   <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),   seed = 42L)
+  run_field <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'field')), seed = 42L)
 
-res_mol   <- summarise_run(run_mol)
-res_field <- summarise_run(run_field)
+  res_mol   <- summarise_run(run_mol)
+  res_field <- summarise_run(run_field)
 
-delta_cost <- res_field$dcost - res_mol$dcost
-delta_qaly <- res_field$dqaly - res_mol$dqaly
+  delta_cost <- res_field$dcost - res_mol$dcost
+  delta_qaly <- res_field$dqaly - res_mol$dqaly
 
-cat(sprintf("Molecular (endog queue, A): dcost = %8.0f  dQALY = %.3f\n",
-            res_mol$dcost, res_mol$dqaly))
-cat(sprintf("Field     (endog queue, A): dcost = %8.0f  dQALY = %.3f\n",
-            res_field$dcost, res_field$dqaly))
-cat(sprintf("Δcost = %.0f  ΔdQALY = %.3f\n", delta_cost, delta_qaly))
-quadrant <- if (delta_cost < 0 && delta_qaly > 0) "SE (dominant)" else
-            if (delta_cost > 0 && delta_qaly > 0) "NE" else
-            if (delta_cost < 0 && delta_qaly < 0) "SW" else "NW (dominated)"
-cat(sprintf("Quadrant: %s\n", quadrant))
+  cat(sprintf("Molecular (endog queue, A): dcost = %8.0f  dQALY = %.3f\n",
+              res_mol$dcost, res_mol$dqaly))
+  cat(sprintf("Field     (endog queue, A): dcost = %8.0f  dQALY = %.3f\n",
+              res_field$dcost, res_field$dqaly))
+  cat(sprintf("Δcost = %.0f  ΔdQALY = %.3f\n", delta_cost, delta_qaly))
+  quadrant <- if (delta_cost < 0 && delta_qaly > 0) "SE (dominant)" else
+              if (delta_cost > 0 && delta_qaly > 0) "NE" else
+              if (delta_cost < 0 && delta_qaly < 0) "SW" else "NW (dominated)"
+  cat(sprintf("Quadrant: %s\n", quadrant))
+}

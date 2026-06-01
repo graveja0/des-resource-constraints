@@ -293,15 +293,19 @@ summarise_run <- function(r) {
   )
 }
 
-run_noscreen <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'noscreen')), seed = 42L)
-run_mol      <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),      seed = 42L)
+# Experiment block runs only when this file is executed directly (Rscript),
+# not when source()d into the manuscript or a harness.
+if (sys.nframe() == 0L) {
+  run_noscreen <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'noscreen')), seed = 42L)
+  run_mol      <- des_run(modifyList(inputs, list(N = inputs$N, strategy = 'mol')),      seed = 42L)
 
-res_noscreen <- summarise_run(run_noscreen)
-res_mol      <- summarise_run(run_mol)
+  res_noscreen <- summarise_run(run_noscreen)
+  res_mol      <- summarise_run(run_mol)
 
-icer <- (res_mol$dcost - res_noscreen$dcost) / (res_mol$dqaly - res_noscreen$dqaly)
-cat(sprintf("No screen : dcost = %8.0f  dQALY = %.3f\n",
-            res_noscreen$dcost, res_noscreen$dqaly))
-cat(sprintf("Molecular : dcost = %8.0f  dQALY = %.3f\n",
-            res_mol$dcost, res_mol$dqaly))
-cat(sprintf("ICER (mol vs no-screen) = %.0f per QALY\n", icer))
+  icer <- (res_mol$dcost - res_noscreen$dcost) / (res_mol$dqaly - res_noscreen$dqaly)
+  cat(sprintf("No screen : dcost = %8.0f  dQALY = %.3f\n",
+              res_noscreen$dcost, res_noscreen$dqaly))
+  cat(sprintf("Molecular : dcost = %8.0f  dQALY = %.3f\n",
+              res_mol$dcost, res_mol$dqaly))
+  cat(sprintf("ICER (mol vs no-screen) = %.0f per QALY\n", icer))
+}
